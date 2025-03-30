@@ -1,0 +1,23 @@
+# RepoSage Configuration Template
+# Rename this file to config.yaml and fill in your specific details
+
+# API Keys
+api_keys:
+  gemini: "your-gemini-api-key"  # Used for generating responses
+  github: "your-github-token"     # Used for repository access
+
+# Repository Settings
+repository:
+  owner: "username"             # Repository owner (username or organization)
+  name: "repo-name"             # Repository name
+  
+# Model Settings
+model:
+  embedding: "all-MiniLM-L6-v2"  # Embedding model for semantic search
+  llm: "gemini-pro"              # LLM for generating responses
+
+# Application Settings
+app:
+  log_level: "INFO"              # Logging level (DEBUG, INFO, WARNING, ERROR)
+  max_context_length: 8000       # Maximum context length for LLM
+  max_files_to_analyze: 50       # Maximum number of files to analyze 

@@ -1,0 +1,22 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install dependencies
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install
+RUN npm install --save-dev @types/react-syntax-highlighter
+RUN npm install --save @tailwindcss/typography
+
+# Copy frontend code
+COPY frontend/ ./
+
+# Build the application
+RUN npm run build
+
+# Production environment
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+
+# Run the application
+CMD ["npm", "start"] 
