@@ -43,6 +43,19 @@ coverage.xml
 *.cover
 .hypothesis/
 
+# Binary and large files
+*.lfs
+*.pack
+*.node
+*.bin
+*.zip
+*.tar.gz
+*.exe
+*.dll
+*.mp4
+*.mov
+*.iso
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -106,5 +119,8 @@ yarn-error.log*
 
 # OS generated files
 .DS_Store
-Thumbs.db frontend/.next/
+Thumbs.db
+
+# Frontend build
+frontend/.next/
 frontend/node_modules/
