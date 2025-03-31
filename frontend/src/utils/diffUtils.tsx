@@ -1,3 +1,4 @@
+import React from 'react';
 import { DiffBlock } from '../types';
 
 // Function to parse unified diff to side-by-side format
@@ -205,4 +206,38 @@ export const renderDiffBlock = (diffBlock: DiffBlock, filePath: string, blockIdx
       </div>
     </div>
   );
+};
+
+/**
+ * Get language from file path for syntax highlighting
+ */
+export const getLanguageFromPath = (path: string): string => {
+  const extension = path.split('.').pop() || '';
+  const languageMap: {[key: string]: string} = {
+    'js': 'javascript',
+    'jsx': 'jsx',
+    'ts': 'typescript',
+    'tsx': 'tsx',
+    'py': 'python',
+    'rb': 'ruby',
+    'java': 'java',
+    'c': 'c',
+    'cpp': 'cpp',
+    'cs': 'csharp',
+    'go': 'go',
+    'rs': 'rust',
+    'php': 'php',
+    'html': 'html',
+    'css': 'css',
+    'scss': 'scss',
+    'json': 'json',
+    'md': 'markdown',
+    'yml': 'yaml',
+    'yaml': 'yaml',
+    'xml': 'xml',
+    'sh': 'bash',
+    'bash': 'bash',
+  };
+  
+  return languageMap[extension] || 'text';
 }; 

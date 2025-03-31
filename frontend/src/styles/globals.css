@@ -8,6 +8,18 @@
   --background-end-rgb: 13, 17, 23;
 }
 
+html, body {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+#__next {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
 body {
   color: rgb(var(--foreground-rgb));
   background: linear-gradient(
@@ -16,11 +28,13 @@ body {
       rgb(var(--background-end-rgb))
     )
     rgb(var(--background-start-rgb));
+  /* Improve smooth scrolling across all elements */
+  scroll-behavior: smooth;
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
+  width: 10px;
   height: 8px;
 }
 
@@ -30,22 +44,54 @@ body {
 
 ::-webkit-scrollbar-thumb {
   background: #4a4a4a;
-  border-radius: 4px;
+  border-radius: 6px;
+  border: 2px solid #1e1e1e;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
 }
 
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #4a4a4a #1e1e1e;
+}
+
+/* Ensure overflowing content is accessible */
+.overflow-x-auto {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.overflow-y-auto {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Text content responsiveness */
+.prose {
+  max-width: 100% !important;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Ensure code blocks don't overflow */
 .prose pre {
   background-color: #1e293b !important;
   border-radius: 0.375rem;
+  max-width: 100% !important;
+  overflow-x: auto;
 }
 
 .prose code {
   background-color: rgba(30, 41, 59, 0.5);
   padding: 0.125rem 0.25rem;
   border-radius: 0.25rem;
+  word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .prose a {
@@ -71,6 +117,12 @@ body {
   margin-right: auto !important;
 }
 
+/* Flex container improvements */
+.flex-1 {
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+}
+
 /* Mobile responsiveness improvements */
 @media (max-width: 768px) {
   .text-center {
@@ -82,5 +134,15 @@ body {
     flex-direction: column;
     align-items: center;
     justify-content: center;
+  }
+  
+  /* Improve mobile scrolling */
+  .overflow-y-auto {
+    -webkit-overflow-scrolling: touch;
+  }
+  
+  /* Reduce padding for mobile */
+  .p-4 {
+    padding: 0.75rem !important;
   }
 } 
