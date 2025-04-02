@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { FaGithub, FaSpinner, FaFolder, FaFolderOpen, FaFile } from 'react-icons/fa';
 import { FileStructure, RepoInfo, Commit } from '../types';
 
@@ -39,6 +39,48 @@ export default function Sidebar({
   onViewCommitDetails,
   onFetchFullHistory
 }: SidebarProps) {
+  // State to control overview section height
+  const [overviewHeight, setOverviewHeight] = useState<number>(120);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const dragHandleRef = useRef<HTMLDivElement>(null);
+  
+  // Handle drag events for resizing
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+  
+  // Effect to handle mouse move and up events
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDragging) {
+        // Get the sidebar element's top position
+        const sidebarElement = dragHandleRef.current?.parentElement;
+        if (sidebarElement) {
+          const sidebarRect = sidebarElement.getBoundingClientRect();
+          const newHeight = e.clientY - sidebarRect.top;
+          // Set a minimum and maximum height
+          if (newHeight >= 60 && newHeight <= 300) {
+            setOverviewHeight(newHeight);
+          }
+        }
+      }
+    };
+    
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+    
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging]);
   
   // Recursive function to render file structure
   const renderFileStructure = (structure: any, path: string = '') => {
@@ -150,7 +192,10 @@ export default function Sidebar({
     <>
       {repoInfo ? (
         <>
-          <div className="p-4 border-b border-gray-700">
+          <div 
+            className="p-4 border-b border-gray-700 overflow-y-auto" 
+            style={{ height: `${overviewHeight}px` }}
+          >
             <h2 className="text-lg font-semibold flex items-center">
               <FaGithub className="mr-2" />
               {repoInfo.name}
@@ -159,6 +204,15 @@ export default function Sidebar({
             <div className="mt-2 text-xs bg-gray-700 rounded px-2 py-1 inline-block">
               {repoInfo.default_branch}
             </div>
+          </div>
+          
+          {/* Resizable handle */}
+          <div 
+            ref={dragHandleRef}
+            className="h-1 bg-gray-700 hover:bg-blue-500 cursor-ns-resize flex items-center justify-center"
+            onMouseDown={handleMouseDown}
+          >
+            <div className="w-8 h-1 rounded-full bg-gray-600"></div>
           </div>
           
           {/* Navigation tabs */}

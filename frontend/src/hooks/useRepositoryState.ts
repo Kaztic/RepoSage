@@ -159,6 +159,15 @@ export default function useRepositoryState() {
         clearInterval(pollingIntervalRef.current);
       }
       
+      // Clear previous repository data when analyzing a new repository
+      setFileStructure({});
+      setCommitHistory([]);
+      setSelectedCommit(null);
+      setShowFullHistory(false);
+      setCodeMetrics(null);
+      setRelevantFiles([]);
+      setFileContent(null);
+      
       // Start a progress simulation to provide feedback during long operations
       pollingIntervalRef.current = setInterval(() => {
         setAnalysisProgress(prev => {
