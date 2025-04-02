@@ -8,6 +8,8 @@ import json
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
+import tempfile
+import uuid
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, Body, Security, status
@@ -31,7 +33,6 @@ from sqlalchemy.orm import sessionmaker, relationship, Session
 from sqlalchemy.sql import func
 from redis import Redis
 from celery import Celery
-import uuid
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from cryptography.fernet import Fernet
@@ -871,128 +872,112 @@ async def get_file_content_at_commit(request: Dict[str, str] = Body(...)):
 
 @app.post("/api/commit-by-hash")
 async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
-    """Get detailed information about a specific commit by hash."""
+    """
+    Get detailed information about a specific commit by its hash.
+    """
     repo_url = request.get("repo_url")
     commit_hash = request.get("commit_hash")
     access_token = request.get("access_token")
     
     if not repo_url or not commit_hash:
-        raise HTTPException(status_code=400, detail="repo_url and commit_hash are required")
+        raise HTTPException(status_code=400, detail="Repository URL and commit hash are required")
     
-    try:
-        # Check if repo is already cached
-        if repo_url not in repo_cache:
-            # Analyze repo if not cached (will be a blocking operation here)
-            await fetch_and_analyze_repo(repo_url, access_token)
-        
-        # Get commit history from cache
-        commit_history = repo_cache[repo_url]["analysis"]["commit_history"]
-        
-        # Search for the commit by hash (either full or short hash)
-        found_commit = None
-        for commit in commit_history:
-            if commit["hash"].startswith(commit_hash) or commit["short_hash"] == commit_hash:
-                found_commit = commit
-                break
-        
-        if found_commit:
-            return {
-                "status": "success",
-                "commit": found_commit
-            }
-        else:
-            # If not found in the cached history, try to fetch directly from the repository
-            repo_dir = repo_cache[repo_url]["path"]
-            repo = Repo(repo_dir)
+    # Check if we already have this repo in cache
+    if repo_url in repo_cache:
+        repo_analyzer = repo_cache[repo_url]["analyzer"]
+    else:
+        # Clone and analyze if needed
+        try:
+            clone_dir = os.path.join(tempfile.gettempdir(), f"reposage_{uuid.uuid4().hex}")
+            os.makedirs(clone_dir, exist_ok=True)
             
-            try:
-                # First try to fetch this commit if it's not in our shallow clone
-                try:
-                    # Check if commit exists before fetching
-                    try:
-                        commit = repo.commit(commit_hash)
-                    except Exception:
-                        # If commit isn't found, try to fetch it specifically
-                        logger.info(f"Commit {commit_hash} not found, attempting to fetch it")
-                        with repo.git.custom_environment(GIT_TERMINAL_PROMPT="0"):
-                            repo.git.fetch("origin", commit_hash)
-                        # Now try to get the commit again
-                        commit = repo.commit(commit_hash)
+            # Clone the repository
+            if access_token:
+                parsed_url = repo_url.strip('/')
+                if parsed_url.startswith('https://github.com/'):
+                    auth_url = f"https://{access_token}@github.com/{'/'.join(parsed_url.split('/')[3:])}"
+                else:
+                    auth_url = repo_url  # Not a GitHub URL or unexpected format
+            else:
+                auth_url = repo_url
                 
-                    # Get file changes for this commit (with safer parent handling)
-                    file_changes = []
-                    
-                    if commit.parents:
-                        # Only process parents if they exist
-                        for parent in commit.parents:
-                            try:
-                                diff_index = parent.diff(commit)
-                                for diff in diff_index:
-                                    change_type = "modified"
-                                    if diff.new_file:
-                                        change_type = "added"
-                                    elif diff.deleted_file:
-                                        change_type = "deleted"
-                                    elif diff.renamed:
-                                        change_type = "renamed"
-                                    
-                                    path = diff.b_path if hasattr(diff, 'b_path') and diff.b_path else (
-                                        diff.a_path if hasattr(diff, 'a_path') and diff.a_path else None
-                                    )
-                                    
-                                    if path:
-                                        file_changes.append({
-                                            "path": path,
-                                            "change_type": change_type,
-                                            "insertions": 0,  # Would need more processing to get accurate numbers
-                                            "deletions": 0
-                                        })
-                            except Exception as e:
-                                logger.warning(f"Error processing parent diff: {e}")
-                                # Continue with other parents
-                    else:
-                        # For commits with no parents (e.g., initial commit)
-                        # Simply list the files in the commit
-                        try:
-                            for item in commit.tree.traverse():
-                                if item.type == 'blob':  # Only include files, not directories
-                                    file_changes.append({
-                                        "path": item.path,
-                                        "change_type": "added",  # Since it's likely the initial commit
-                                        "insertions": 0,
-                                        "deletions": 0
-                                    })
-                        except Exception as e:
-                            logger.warning(f"Error getting files from commit tree: {e}")
+            logger.info(f"Cloning repository: {repo_url} to {clone_dir}")
+            Repo.clone_from(auth_url, clone_dir)
+            
+            # Create analyzer
+            repo_analyzer = RepoAnalyzer(clone_dir)
+            
+            # Cache for future use
+            repo_cache[repo_url] = {
+                "analyzer": repo_analyzer,
+                "clone_dir": clone_dir,
+                "timestamp": datetime.now()
+            }
+        except Exception as e:
+            logger.error(f"Error cloning or analyzing repository: {e}")
+            raise HTTPException(status_code=500, detail=f"Error processing repository: {str(e)}")
+    
+    # Get the commit details
+    commit_info = repo_analyzer.get_commit_by_hash(commit_hash)
+    
+    if not commit_info:
+        raise HTTPException(status_code=404, detail=f"Commit {commit_hash} not found")
+    
+    return commit_info
+
+@app.post("/api/file-diff")
+async def get_file_diff(request: Dict[str, str] = Body(...)):
+    """
+    Get the diff for a specific file in a commit.
+    """
+    repo_url = request.get("repo_url")
+    commit_hash = request.get("commit_hash")
+    file_path = request.get("file_path")
+    access_token = request.get("access_token")
+    
+    if not repo_url or not commit_hash or not file_path:
+        raise HTTPException(status_code=400, 
+                           detail="Repository URL, commit hash, and file path are required")
+    
+    # Check if we already have this repo in cache
+    if repo_url in repo_cache:
+        repo_analyzer = repo_cache[repo_url]["analyzer"]
+    else:
+        # Clone and analyze if needed
+        try:
+            clone_dir = os.path.join(tempfile.gettempdir(), f"reposage_{uuid.uuid4().hex}")
+            os.makedirs(clone_dir, exist_ok=True)
+            
+            # Clone the repository
+            if access_token:
+                parsed_url = repo_url.strip('/')
+                if parsed_url.startswith('https://github.com/'):
+                    auth_url = f"https://{access_token}@github.com/{'/'.join(parsed_url.split('/')[3:])}"
+                else:
+                    auth_url = repo_url  # Not a GitHub URL or unexpected format
+            else:
+                auth_url = repo_url
                 
-                    commit_info = {
-                        "hash": commit.hexsha,
-                        "short_hash": commit.hexsha[:7],
-                        "author": f"{commit.author.name} <{commit.author.email}>",
-                        "date": datetime.fromtimestamp(commit.committed_date).isoformat(),
-                        "message": commit.message.strip(),
-                        "stats": {
-                            "files_changed": len(file_changes),
-                            "insertions": 0,
-                            "deletions": 0
-                        },
-                        "file_changes": file_changes
-                    }
-                    
-                    return {
-                        "status": "success",
-                        "commit": commit_info
-                    }
-                except Exception as e:
-                    logger.error(f"Error accessing commit after fetch attempt: {e}", exc_info=True)
-                    return {"status": "error", "message": f"Commit {commit_hash} not found or inaccessible: {str(e)}"}
-            except Exception as e:
-                logger.error(f"Error accessing commit directly: {e}", exc_info=True)
-                return {"status": "error", "message": f"Commit {commit_hash} not found in repository"}
-                
-    except Exception as e:
-        logger.error(f"Error getting commit by hash: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+            logger.info(f"Cloning repository: {repo_url} to {clone_dir}")
+            Repo.clone_from(auth_url, clone_dir)
+            
+            # Create analyzer
+            repo_analyzer = RepoAnalyzer(clone_dir)
+            
+            # Cache for future use
+            repo_cache[repo_url] = {
+                "analyzer": repo_analyzer,
+                "clone_dir": clone_dir,
+                "timestamp": datetime.now()
+            }
+        except Exception as e:
+            logger.error(f"Error cloning or analyzing repository: {e}")
+            raise HTTPException(status_code=500, detail=f"Error processing repository: {str(e)}")
+    
+    # Get the file diff
+    diff_text = repo_analyzer.get_file_diff(commit_hash, file_path)
+    
+    return {"diff": diff_text}
 
 # Authentication helper functions
 def verify_password(plain_password, hashed_password):

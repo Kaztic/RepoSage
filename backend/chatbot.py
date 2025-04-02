@@ -206,6 +206,233 @@ class RepoAnalyzer:
         
         return commits
     
+    def get_commit_by_hash(self, commit_hash: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a specific commit by hash."""
+        try:
+            # First try to find in cached history
+            for commit in self.commit_history:
+                if commit["hash"].startswith(commit_hash) or commit["short_hash"] == commit_hash:
+                    return commit
+            
+            # If not found, try to get directly from git
+            try:
+                commit = self.repo.commit(commit_hash)
+                
+                commit_info = {
+                    "hash": commit.hexsha,
+                    "short_hash": commit.hexsha[:7],
+                    "author": f"{commit.author.name} <{commit.author.email}>",
+                    "date": datetime.fromtimestamp(commit.committed_date).isoformat(),
+                    "message": commit.message.strip(),
+                    "stats": {"files_changed": 0, "insertions": 0, "deletions": 0},
+                    "file_changes": []
+                }
+                
+                # Get detailed file changes
+                file_changes = []
+                if commit.parents:
+                    parent = commit.parents[0]
+                    diff_index = parent.diff(commit)
+                    
+                    total_insertions = 0
+                    total_deletions = 0
+                    
+                    for diff in diff_index:
+                        change_type = "modified"
+                        if diff.new_file:
+                            change_type = "added"
+                        elif diff.deleted_file:
+                            change_type = "deleted"
+                        elif diff.renamed:
+                            change_type = "renamed"
+                        
+                        # Determine the path to show
+                        path = None
+                        if hasattr(diff, 'b_path') and diff.b_path:
+                            path = diff.b_path
+                        elif hasattr(diff, 'a_path') and diff.a_path:
+                            path = diff.a_path
+                        else:
+                            # Skip files with no path information
+                            continue
+                        
+                        try:
+                            # Try to get stats
+                            insertions = 0
+                            deletions = 0
+                            
+                            try:
+                                # GitPython doesn't directly provide line stats per file
+                                # We'll use git diff --numstat instead
+                                stats_output = self.repo.git.diff(
+                                    parent.hexsha, 
+                                    commit.hexsha, 
+                                    '--numstat',
+                                    path
+                                )
+                                
+                                if stats_output.strip():
+                                    stats_parts = stats_output.strip().split('\t')
+                                    if len(stats_parts) >= 3:
+                                        try:
+                                            insertions = int(stats_parts[0]) if stats_parts[0] != '-' else 0
+                                            deletions = int(stats_parts[1]) if stats_parts[1] != '-' else 0
+                                        except ValueError:
+                                            # Binary files show as '-' in numstat
+                                            pass
+                            except Exception as e:
+                                logger.warning(f"Error getting stats for {path}: {e}")
+                            
+                            total_insertions += insertions
+                            total_deletions += deletions
+                            
+                            # Add file change info with stats
+                            file_changes.append({
+                                "path": path,
+                                "change_type": change_type,
+                                "insertions": insertions,
+                                "deletions": deletions
+                            })
+                        except Exception as e:
+                            logger.warning(f"Error processing stats for {path}: {e}")
+                            # Add basic file change info without stats
+                            file_changes.append({
+                                "path": path,
+                                "change_type": change_type,
+                                "insertions": 0,
+                                "deletions": 0
+                            })
+                else:
+                    # Initial commit - all files are added
+                    for entry in commit.tree.traverse():
+                        if entry.type == 'blob':  # File not directory
+                            file_changes.append({
+                                "path": entry.path,
+                                "change_type": "added",
+                                "insertions": 0,
+                                "deletions": 0
+                            })
+                
+                # Update commit stats
+                commit_info["stats"] = {
+                    "files_changed": len(file_changes),
+                    "insertions": total_insertions,
+                    "deletions": total_deletions
+                }
+                commit_info["file_changes"] = file_changes
+                
+                return commit_info
+            except Exception as e:
+                logger.error(f"Error retrieving commit {commit_hash}: {e}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error retrieving commit {commit_hash}: {e}")
+            return None
+            
+    def get_file_diff(self, commit_hash: str, file_path: str) -> str:
+        """Get the diff for a specific file in a commit."""
+        try:
+            commit = self.repo.commit(commit_hash)
+            
+            # Handle different cases based on commit situation
+            if not commit.parents:
+                # Initial commit - show file contents as addition
+                try:
+                    blob = commit.tree / file_path
+                    if blob.data_stream.read(1024).find(b'\x00') != -1:
+                        return "File was added in this commit (binary content)"
+                    
+                    blob.data_stream.close()
+                    content = blob.data_stream.read().decode('utf-8', errors='replace')
+                    return f"Initial commit, file added:\n\n{content}"
+                except UnicodeDecodeError:
+                    return "Binary file (no text diff available)"
+                except Exception as e:
+                    return f"Error retrieving diff: {str(e)}"
+            else:
+                # Normal commit with parent
+                parent = commit.parents[0]
+                
+                # Check if file was added in this commit
+                try:
+                    parent.tree / file_path
+                except Exception:  # Fix: adding explicit exception
+                    # File didn't exist in parent, so it was added
+                    try:
+                        blob = commit.tree / file_path
+                        # Try to detect if it's a binary file
+                        sample = blob.data_stream.read(8192)
+                        blob.data_stream.close()
+                        
+                        if b'\x00' in sample:
+                            return "File was added in this commit (binary content)"
+                        
+                        # Read file content
+                        blob = commit.tree / file_path
+                        content = blob.data_stream.read().decode('utf-8', errors='replace')
+                        return f"File was added in this commit:\n\n{content}"
+                    except UnicodeDecodeError:
+                        return "Binary file (no text diff available)"
+                    except Exception as e:
+                        return f"Error retrieving added file content: {str(e)}"
+                
+                # Check if file was deleted in this commit
+                try:
+                    commit.tree / file_path
+                except Exception:  # Fix: adding explicit exception
+                    # File doesn't exist in current commit, so it was deleted
+                    try:
+                        blob = parent.tree / file_path
+                        # Check if binary
+                        sample = blob.data_stream.read(8192)
+                        blob.data_stream.close()
+                        
+                        if b'\x00' in sample:
+                            return "File was deleted in this commit (binary content)"
+                        
+                        # Show previous content
+                        blob = parent.tree / file_path
+                        content = blob.data_stream.read().decode('utf-8', errors='replace')
+                        return f"File was deleted in this commit. Previous content:\n\n{content}"
+                    except UnicodeDecodeError:
+                        return "Binary file (no text diff available)"
+                    except Exception as e:
+                        return f"Error retrieving deleted file content: {str(e)}"
+                
+                # Normal file modification
+                try:
+                    # Get diff using git command for more reliable output
+                    diff_text = self.repo.git.diff(
+                        f"{parent.hexsha}..{commit.hexsha}",
+                        "--",
+                        file_path,
+                        ignore_blank_lines=False,
+                        ignore_space_at_eol=False
+                    )
+                    
+                    if not diff_text.strip():
+                        # Check if file mode/permissions changed
+                        mode_diff = self.repo.git.diff(
+                            f"{parent.hexsha}..{commit.hexsha}",
+                            "--summary",
+                            "--",
+                            file_path
+                        )
+                        if mode_diff.strip():
+                            return "File metadata changed (permissions or mode)"
+                        else:
+                            return "No changes detected in this file for this commit"
+                    
+                    return diff_text
+                except Exception as e:
+                    logger.error(f"Error getting diff for {file_path} in commit {commit_hash}: {e}")
+                    return f"Could not retrieve diff: {str(e)}"
+                    
+        except Exception as e:
+            logger.error(f"Error retrieving diff for file {file_path} in commit {commit_hash}: {e}")
+            return f"Error retrieving diff: {str(e)}"
+    
     def _get_file_structure(self) -> Dict[str, Any]:
         """Create a map of the repository file structure."""
         file_structure = {}
@@ -482,46 +709,14 @@ class GeminiClient:
     def _get_file_diff(self, commit_hash, file_path):
         """Get the diff of a file at a specific commit."""
         try:
-            repo = self.repo_analyzer.repo
-            commit = repo.commit(commit_hash)
-            
-            if not commit.parents:
-                # Initial commit, no parent to diff against
-                return "Initial commit, file added"
-                
-            parent = commit.parents[0]
-            
-            # Get the diff between this commit and its parent
-            try:
-                diff_str = ""
-                diffs = parent.diff(commit, paths=[file_path])
-                
-                for diff_item in diffs:
-                    # Get the actual diff content
-                    try:
-                        diff_str = diff_item.diff.decode('utf-8', errors='replace')
-                    except:
-                        diff_str = "Binary file or encoding error"
-                
-                return diff_str if diff_str else "No changes detected"
-            except:
-                return "Could not retrieve diff"
+            return self.repo_analyzer.get_file_diff(commit_hash, file_path)
         except Exception as e:
             logger.error(f"Error getting file diff: {e}")
             return "Error retrieving diff"
     
     def _get_readme_summary(self):
         """Get a summary of the README file."""
-        try:
-            readme_paths = ['README.md', 'README.rst', 'Readme.md', 'readme.md']
-            for path in readme_paths:
-                full_path = os.path.join(self.repo_analyzer.repo.working_dir, path)
-                if os.path.exists(full_path):
-                    with open(full_path, 'r', encoding='utf-8') as f:
-                        return f.read()[:500] + "..."
-            return "No README found"
-        except:
-            return "Error reading README"
+        return self.repo_analyzer._get_readme_summary()
     
     async def _generate_response(self, query, context_str):
         """Generate a response from Gemini."""

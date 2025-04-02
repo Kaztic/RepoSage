@@ -1,7 +1,7 @@
 import { FaSpinner } from 'react-icons/fa';
 import CodeHighlighter from './CodeHighlighter';
 import { Commit } from '../types';
-import { getLanguageFromPath, parseDiffToSideBySide } from '../utils/diffUtils';
+import { getLanguageFromPath, parseDiffToSideBySide, renderDiffBlock } from '../utils/diffUtils';
 
 type CommitViewerProps = {
   commit: Commit;
@@ -70,15 +70,18 @@ export default function CommitViewer({
                 >
                   View file content
                 </button>
-                {file.change_type !== 'added' && file.change_type !== 'deleted' && (
-                  <button 
-                    onClick={() => onToggleFileDiff(commit.short_hash, file.path, idx)}
-                    className="text-xs text-purple-400 hover:text-purple-300"
-                  >
-                    {file.showDiff ? 'Hide diff' : 'View diff'}
-                  </button>
-                )}
+                <button 
+                  onClick={() => onToggleFileDiff(commit.short_hash, file.path, idx)}
+                  className="text-xs text-purple-400 hover:text-purple-300"
+                >
+                  {file.showDiff ? 'Hide diff' : 'View diff'}
+                </button>
               </div>
+              {file.loading && (
+                <div className="mt-2 flex justify-center">
+                  <FaSpinner className="animate-spin text-gray-400" />
+                </div>
+              )}
               {file.showDiff && file.diff && (
                 <div className="mt-2 bg-gray-900/50 p-2 rounded overflow-x-auto">
                   {/* Check for binary file or encoding errors first */}
@@ -88,36 +91,10 @@ export default function CommitViewer({
                       <span className="font-medium">Cannot display diff:</span> This appears to be a binary file or has encoding issues
                     </div>
                   ) : (
-                    /* Improved diff display for text files */
+                    /* GitHub-like diff display for text files */
                     <div className="diff-container">
                       {parseDiffToSideBySide(file.diff).map((diffBlock, blockIdx) => (
-                        <div key={blockIdx} className="mb-4">
-                          {diffBlock.header && (
-                            <div className="text-gray-400 font-mono text-xs mb-1">
-                              {diffBlock.header}
-                            </div>
-                          )}
-                          <div className="flex flex-row">
-                            {/* Left side (removed) */}
-                            <div className="w-1/2 pr-2 border-r border-gray-700">
-                              <CodeHighlighter
-                                language={getLanguageFromPath(file.path)}
-                                customStyle={{ margin: 0, padding: '0.5rem', fontSize: '0.8rem', background: 'transparent' }}
-                              >
-                                {diffBlock.removed.join('\n')}
-                              </CodeHighlighter>
-                            </div>
-                            {/* Right side (added) */}
-                            <div className="w-1/2 pl-2">
-                              <CodeHighlighter
-                                language={getLanguageFromPath(file.path)}
-                                customStyle={{ margin: 0, padding: '0.5rem', fontSize: '0.8rem', background: 'transparent' }}
-                              >
-                                {diffBlock.added.join('\n')}
-                              </CodeHighlighter>
-                            </div>
-                          </div>
-                        </div>
+                        renderDiffBlock(diffBlock, file.path, blockIdx)
                       ))}
                     </div>
                   )}

@@ -40,6 +40,10 @@ export interface FileChange {
   change_type: string;
   insertions: number;
   deletions: number;
+  showDiff?: boolean;
+  diff?: string;
+  displayContent?: string;
+  loading?: boolean;
 }
 
 export interface AstInfo {

@@ -82,6 +82,21 @@ export const fetchFileContentAtCommit = async (
   return response.data;
 };
 
+export const fetchFileDiff = async (
+  repoUrl: string,
+  commitHash: string,
+  filePath: string,
+  accessToken?: string
+) => {
+  const response = await axios.post(`${API_BASE_URL}/api/file-diff`, {
+    repo_url: repoUrl,
+    commit_hash: commitHash,
+    file_path: filePath,
+    access_token: accessToken || undefined,
+  });
+  return response.data;
+};
+
 /**
  * Send a chat message to the appropriate AI model (Claude or Gemini)
  */

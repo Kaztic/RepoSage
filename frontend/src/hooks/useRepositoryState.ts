@@ -497,40 +497,63 @@ export default function useRepositoryState() {
   
   // Fetch file diff for a specific commit and file
   const fetchFileDiff = async (commitHash: string, filePath: string, fileIndex: number) => {
-    if (!repoUrl) return;
+    if (!repoUrl || !commitHash || !filePath) return;
     
     try {
-      setLoading(true);
+      // Update the selected commit to show loading state
+      setSelectedCommit(prev => {
+        if (!prev || !prev.file_changes) return prev;
+        
+        const updatedFileChanges = [...prev.file_changes];
+        updatedFileChanges[fileIndex] = {
+          ...updatedFileChanges[fileIndex],
+          loading: true
+        };
+        
+        return {
+          ...prev,
+          file_changes: updatedFileChanges
+        };
+      });
       
-      // For now, use the file-content-at-commit endpoint
-      const data = await apiService.fetchFileContentAtCommit(
-        repoUrl,
-        commitHash,
-        filePath,
-        accessToken || undefined
-      );
-
-      if (data.status === 'success') {
-        // Update the commit's file change with the diff
-        setSelectedCommit((prev: Commit | null) => {
-          if (!prev) return prev;
-          
-          const updatedFileChanges = [...prev.file_changes];
-          updatedFileChanges[fileIndex] = {
-            ...updatedFileChanges[fileIndex],
-            diff: `--- a/${filePath}\n+++ b/${filePath}\n${data.content}`
-          };
-          
-          return {
-            ...prev,
-            file_changes: updatedFileChanges
-          };
-        });
-      }
+      // Use our new API to get the diff
+      const response = await apiService.fetchFileDiff(repoUrl, commitHash, filePath, accessToken);
+      
+      // Update the selected commit with the diff content
+      setSelectedCommit(prev => {
+        if (!prev || !prev.file_changes) return prev;
+        
+        const updatedFileChanges = [...prev.file_changes];
+        updatedFileChanges[fileIndex] = {
+          ...updatedFileChanges[fileIndex],
+          diff: response.diff,
+          loading: false
+        };
+        
+        return {
+          ...prev,
+          file_changes: updatedFileChanges
+        };
+      });
     } catch (error) {
       console.error('Error fetching file diff:', error);
-    } finally {
-      setLoading(false);
+      
+      // Update the selected commit to show error state
+      setSelectedCommit(prev => {
+        if (!prev || !prev.file_changes) return prev;
+        
+        const updatedFileChanges = [...prev.file_changes];
+        updatedFileChanges[fileIndex] = {
+          ...updatedFileChanges[fileIndex],
+          diff: "Error retrieving diff. Please try again.",
+          loading: false
+        };
+        
+        return {
+          ...prev,
+          file_changes: updatedFileChanges
+        };
+      });
     }
   };
   
