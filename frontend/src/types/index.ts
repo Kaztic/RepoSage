@@ -52,4 +52,26 @@ export type DiffBlock = {
   added: string[];
   removedLineNumbers: number[];
   addedLineNumbers: number[];
+};
+
+export type FunctionInfo = {
+  name: string;
+  start_line: number;
+  end_line: number;
+  complexity: number;
+  params?: string[];
+  description?: string;
+};
+
+export type CodeMetrics = {
+  file_path: string;
+  metrics?: {
+    cyclomatic_complexity: number;
+    maintainability_index?: number;
+    lines_of_code?: number;
+    comment_ratio?: number;
+  };
+  functions?: FunctionInfo[];
+  recommendations?: string[];
+  error?: string;
 }; 

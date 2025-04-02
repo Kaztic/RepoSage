@@ -88,6 +88,10 @@ export default function Home() {
             chatInputRef={repoState.chatInputRef}
             onInputChange={repoState.setCurrentInput}
             onSendMessage={repoState.sendMessage}
+            selectedModel={repoState.selectedModel}
+            onModelChange={repoState.changeModel}
+            useClaudeModel={repoState.useClaudeModel}
+            onToggleModelProvider={repoState.toggleModel}
           />
         }
         rightPanelContent={getRightPanelContent()}

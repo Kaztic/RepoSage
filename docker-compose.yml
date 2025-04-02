@@ -10,10 +10,39 @@ services:
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - PORT=8000
       - ALLOWED_ORIGINS=http://localhost:3000
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/reposage
+      - REDIS_URL=redis://redis:6379/0
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - SECRET_KEY=${SECRET_KEY}
     volumes:
       - /tmp:/tmp  # Share the tmp directory for git repositories
+    depends_on:
+      - redis
+      - postgres
+    restart: always
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    command: celery -A app.celery_app worker --loglevel=info
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/reposage
+      - REDIS_URL=redis://redis:6379/0
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - SECRET_KEY=${SECRET_KEY}
+    volumes:
+      - /tmp:/tmp  # Share the tmp directory for git repositories
+    depends_on:
+      - redis
+      - postgres
+      - backend
     restart: always
 
   frontend:
@@ -23,7 +52,32 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
     depends_on:
       - backend
-    restart: always 
+    restart: always
+
+  redis:
+    image: redis:7.2-alpine
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+    command: redis-server --save 60 1 --loglevel warning
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=reposage
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+volumes:
+  redis_data:
+  postgres_data: 

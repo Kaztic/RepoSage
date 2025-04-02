@@ -1,6 +1,5 @@
 import { FaSpinner } from 'react-icons/fa';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { atomDark } from 'react-syntax-highlighter/dist/cjs/styles/prism';
+import CodeHighlighter from './CodeHighlighter';
 import { Commit } from '../types';
 import { getLanguageFromPath, parseDiffToSideBySide } from '../utils/diffUtils';
 
@@ -82,51 +81,56 @@ export default function CommitViewer({
               </div>
               {file.showDiff && file.diff && (
                 <div className="mt-2 bg-gray-900/50 p-2 rounded overflow-x-auto">
-                  {/* Improved diff display */}
-                  <div className="diff-container">
-                    {parseDiffToSideBySide(file.diff).map((diffBlock, blockIdx) => (
-                      <div key={blockIdx} className="mb-4">
-                        {diffBlock.header && (
-                          <div className="text-gray-400 font-mono text-xs mb-1">
-                            {diffBlock.header}
-                          </div>
-                        )}
-                        <div className="flex flex-row">
-                          {/* Left side (removed) */}
-                          <div className="w-1/2 pr-2 border-r border-gray-700">
-                            <SyntaxHighlighter
-                              language={getLanguageFromPath(file.path)}
-                              style={atomDark}
-                              customStyle={{ margin: 0, padding: '0.5rem', fontSize: '0.8rem', background: 'transparent' }}
-                            >
-                              {diffBlock.removed.join('\n')}
-                            </SyntaxHighlighter>
-                          </div>
-                          {/* Right side (added) */}
-                          <div className="w-1/2 pl-2">
-                            <SyntaxHighlighter
-                              language={getLanguageFromPath(file.path)}
-                              style={atomDark}
-                              customStyle={{ margin: 0, padding: '0.5rem', fontSize: '0.8rem', background: 'transparent' }}
-                            >
-                              {diffBlock.added.join('\n')}
-                            </SyntaxHighlighter>
+                  {/* Check for binary file or encoding errors first */}
+                  {file.diff === "Binary file or encoding error" || 
+                   file.diff.includes("Binary file") ? (
+                    <div className="p-3 bg-gray-800 text-amber-300 rounded">
+                      <span className="font-medium">Cannot display diff:</span> This appears to be a binary file or has encoding issues
+                    </div>
+                  ) : (
+                    /* Improved diff display for text files */
+                    <div className="diff-container">
+                      {parseDiffToSideBySide(file.diff).map((diffBlock, blockIdx) => (
+                        <div key={blockIdx} className="mb-4">
+                          {diffBlock.header && (
+                            <div className="text-gray-400 font-mono text-xs mb-1">
+                              {diffBlock.header}
+                            </div>
+                          )}
+                          <div className="flex flex-row">
+                            {/* Left side (removed) */}
+                            <div className="w-1/2 pr-2 border-r border-gray-700">
+                              <CodeHighlighter
+                                language={getLanguageFromPath(file.path)}
+                                customStyle={{ margin: 0, padding: '0.5rem', fontSize: '0.8rem', background: 'transparent' }}
+                              >
+                                {diffBlock.removed.join('\n')}
+                              </CodeHighlighter>
+                            </div>
+                            {/* Right side (added) */}
+                            <div className="w-1/2 pl-2">
+                              <CodeHighlighter
+                                language={getLanguageFromPath(file.path)}
+                                customStyle={{ margin: 0, padding: '0.5rem', fontSize: '0.8rem', background: 'transparent' }}
+                              >
+                                {diffBlock.added.join('\n')}
+                              </CodeHighlighter>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               {file.displayContent && (
                 <div className="mt-2 bg-gray-900/50 p-2 rounded overflow-x-auto">
-                  <SyntaxHighlighter
+                  <CodeHighlighter
                     language={getLanguageFromPath(file.path)}
-                    style={atomDark}
                     customStyle={{ margin: 0 }}
                   >
                     {file.displayContent}
-                  </SyntaxHighlighter>
+                  </CodeHighlighter>
                 </div>
               )}
             </div>

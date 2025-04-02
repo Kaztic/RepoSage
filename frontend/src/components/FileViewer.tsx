@@ -1,6 +1,5 @@
 import { useRef } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { atomDark } from 'react-syntax-highlighter/dist/cjs/styles/prism';
+import CodeHighlighter from './CodeHighlighter';
 import { RelevantFile } from '../types';
 import { getLanguageFromPath } from '../utils/diffUtils';
 
@@ -52,14 +51,12 @@ export default function FileViewer({ file, onCopyToChat, onClose }: FileViewerPr
               }
             }}
           >
-            <SyntaxHighlighter
+            <CodeHighlighter
               language={getLanguageFromPath(file.path)}
-              style={atomDark}
-              showLineNumbers
               customStyle={{ background: 'transparent', margin: 0 }}
             >
               {file.content}
-            </SyntaxHighlighter>
+            </CodeHighlighter>
             <div 
               id="selection-popup" 
               ref={selectionPopupRef}

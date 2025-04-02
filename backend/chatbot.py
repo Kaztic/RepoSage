@@ -382,7 +382,7 @@ class RepoAnalyzer:
 class GeminiClient:
     """Client for interacting with Gemini API."""
     
-    def __init__(self, repo_analyzer, model_name="models/gemini-1.5-pro"):
+    def __init__(self, repo_analyzer, model_name="models/gemini-2.0-flash"):
         self.api_key = os.environ.get("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("Gemini API key not set in environment variables")
@@ -471,7 +471,7 @@ class GeminiClient:
         
         # Generate response
         logger.info(f"Generating response using {self.model_name}")
-        response = self._generate_response(user_query, context_str)
+        response = await self._generate_response(user_query, context_str)
         
         return {
             "message": {"role": "assistant", "content": response},
@@ -523,7 +523,7 @@ class GeminiClient:
         except:
             return "Error reading README"
     
-    def _generate_response(self, query, context_str):
+    async def _generate_response(self, query, context_str):
         """Generate a response from Gemini."""
         try:
             genai_model = genai.GenerativeModel(self.model_name)
@@ -545,8 +545,18 @@ class GeminiClient:
             to make it easy to read. If you're not sure about something, be honest about your limitations.
             """
             
-            response = genai_model.generate_content(prompt)
-            return response.text
+            # Create generator for streaming response
+            response_stream = genai_model.generate_content(prompt, stream=True)
+            
+            # Collect the response chunks
+            response_text = ""
+            for chunk in response_stream:
+                if hasattr(chunk, 'text'):
+                    response_text += chunk.text
+                elif hasattr(chunk, 'delta') and hasattr(chunk.delta, 'text'):
+                    response_text += chunk.delta.text
+            
+            return response_text
         except Exception as e:
             logger.error(f"Error generating response: {e}")
             return f"I'm sorry, I encountered an error while processing your request: {str(e)}"
@@ -620,6 +630,262 @@ class GeminiClient:
         except Exception as e:
             logger.error(f"Error getting full commit history: {e}")
             return []
+
+
+class ClaudeClient:
+    """Client for interacting with Claude Sonnet 3.7 API based on repository analysis."""
+    
+    def __init__(self, repo_analyzer, model_name="claude-3-sonnet-20240229"):
+        """Initialize the Claude client with repository analyzer."""
+        self.repo_analyzer = repo_analyzer
+        self.model_name = model_name
+        
+        # API key from environment
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not anthropic_api_key:
+            logger.error("ANTHROPIC_API_KEY not found in environment variables")
+            raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
+        
+        # Initialize Claude client
+        import anthropic
+        self.client = anthropic.Anthropic(api_key=anthropic_api_key)
+        
+        # Load system prompts and instructions
+        self._load_system_prompt()
+    
+    def _load_system_prompt(self):
+        """Load system prompt for Claude from config file or use default."""
+        try:
+            with open(os.path.join(os.path.dirname(__file__), "config.yaml"), "r") as f:
+                config = yaml.safe_load(f)
+                self.system_prompt = config.get("claude_system_prompt", self._default_system_prompt())
+        except Exception as e:
+            logger.warning(f"Error loading system prompt from config: {e}")
+            self.system_prompt = self._default_system_prompt()
+    
+    def _default_system_prompt(self):
+        """Default system prompt for Claude."""
+        return """You are RepoSage, an advanced AI assistant for analyzing GitHub repositories.
+Your goal is to provide accurate, insightful information about repository structure, code patterns, and development history.
+You have access to the following information:
+1. Repository structure and file contents
+2. Commit history and code changes
+3. README and documentation
+
+When analyzing code:
+- Identify design patterns, architecture, and code organization
+- Explain complex code sections with clear, accurate explanations
+- Detect potential code smells, bugs, or optimization opportunities
+- Provide best practices and improvement suggestions
+
+Keep responses concise, factual, and directly relevant to the query.
+Cite specific files, functions, or code snippets when applicable.
+If you're uncertain about something, acknowledge your limitations rather than guessing."""
+    
+    async def chat(self, messages):
+        """Process chat messages and generate repository-aware responses."""
+        # Convert message format to Claude format
+        claude_messages = []
+        
+        # Add relevant context from repository
+        query = None
+        for message in messages:
+            if message["role"] == "user":
+                query = message["content"]
+                
+        if query:
+            # Prepare repository context based on the user query
+            context = self._prepare_context(query)
+            
+            # Add system message with context
+            system_message = self.system_prompt + "\n\nRepository Context:\n" + context
+        else:
+            system_message = self.system_prompt
+            
+        # Convert messages to Claude message format
+        user_message_content = ""
+        for message in messages:
+            if message["role"] == "user":
+                user_message_content += message["content"] + "\n"
+        
+        try:
+            # Generate response from Claude
+            response = await self._generate_claude_response(system_message, user_message_content)
+            return response
+        except Exception as e:
+            logger.error(f"Error generating Claude response: {e}")
+            return "I encountered an error analyzing this repository. Please try again."
+    
+    def _prepare_context(self, query):
+        """Prepare repository context based on the user query."""
+        try:
+            # Find relevant files based on the query
+            relevant_files = self.repo_analyzer.search_relevant_files(query, top_k=5)
+            
+            # Search commit history for relevant commits
+            relevant_commits = self.repo_analyzer.search_commit_history(query)[:3]
+            
+            # Get README summary for general context
+            readme_summary = self._get_readme_summary()
+            
+            # Compile context information with repository insights
+            context_parts = [
+                f"Repository Name: {os.path.basename(self.repo_analyzer.repo.working_dir)}",
+                f"README Summary: {readme_summary[:500]}...",
+                "\nRelevant Files:"
+            ]
+            
+            # Add file contents for context
+            for file_path, _ in relevant_files:
+                content = self.repo_analyzer.file_contents.get(file_path, "")
+                if len(content) > 5000:  # Truncate very large files
+                    content = content[:5000] + "...[truncated]"
+                context_parts.append(f"\nFile: {file_path}\n```\n{content}\n```")
+            
+            # Add relevant commits
+            if relevant_commits:
+                context_parts.append("\nRelevant Commits:")
+                for commit in relevant_commits:
+                    context_parts.append(f"\nCommit: {commit['short_hash']} - {commit['message']}")
+                    if commit.get('file_changes'):
+                        file_changes = [f"- {c['path']} ({c['change_type']})" for c in commit['file_changes'][:5]]
+                        context_parts.append("\n".join(file_changes))
+            
+            return "\n".join(context_parts)
+        except Exception as e:
+            logger.error(f"Error preparing context: {e}")
+            return "Error preparing repository context."
+    
+    def _get_readme_summary(self):
+        """Get README summary from repository."""
+        return self.repo_analyzer._get_readme_summary()
+    
+    async def _generate_claude_response(self, system_message, user_message):
+        """Generate response from Claude API."""
+        import anthropic
+        import json
+        
+        try:
+            # Stream the response from Claude
+            async def stream_response():
+                response_stream = await self.client.messages.create(
+                    model=self.model_name,
+                    max_tokens=4000,
+                    system=system_message,
+                    messages=[
+                        {"role": "user", "content": user_message}
+                    ],
+                    stream=True
+                )
+                
+                # Collect the response chunks
+                collected_content = []
+                async for chunk in response_stream:
+                    if chunk.type == "content_block_delta" and chunk.delta.text:
+                        collected_content.append(chunk.delta.text)
+                        yield chunk.delta.text
+            
+            # Instead of awaiting the generator, collect all content first
+            response_text = ""
+            async for chunk in stream_response():
+                response_text += chunk
+            
+            return response_text
+        except Exception as e:
+            logger.error(f"Error in Claude API call: {e}")
+            return f"Error generating response: {str(e)}"
+    
+    def analyze_code_complexity(self, file_path):
+        """Analyze code complexity for a specific file."""
+        import radon.complexity as cc
+        import radon.metrics as metrics
+        
+        content = self.repo_analyzer.file_contents.get(file_path)
+        if not content:
+            return {"error": "File not found"}
+            
+        try:
+            # Only analyze certain file types
+            if file_path.endswith(('.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.cs')):
+                results = {
+                    "file_path": file_path,
+                    "metrics": {}
+                }
+                
+                # Calculate complexity metrics
+                try:
+                    complexity = cc.cc_visit(content)
+                    avg_complexity = sum(func.complexity for func in complexity) / len(complexity) if complexity else 0
+                    results["metrics"]["cyclomatic_complexity"] = avg_complexity
+                    
+                    # Add function-level complexity
+                    results["functions"] = []
+                    for func in complexity:
+                        results["functions"].append({
+                            "name": func.name,
+                            "complexity": func.complexity,
+                            "line_number": func.lineno
+                        })
+                except:
+                    pass
+                
+                # Add raw metrics (lines of code, etc.)
+                try:
+                    raw_metrics = metrics.mi_visit(content, multi=True)
+                    results["metrics"]["maintainability_index"] = raw_metrics.mi
+                    results["metrics"]["lines_of_code"] = raw_metrics.sloc
+                    results["metrics"]["comment_ratio"] = raw_metrics.comments / raw_metrics.sloc if raw_metrics.sloc > 0 else 0
+                except:
+                    pass
+                
+                return results
+            else:
+                return {"error": "Unsupported file type for complexity analysis"}
+                
+        except Exception as e:
+            logger.error(f"Error analyzing code complexity: {e}")
+            return {"error": f"Analysis failed: {str(e)}"}
+    
+    def generate_code_recommendations(self, file_path):
+        """Generate code recommendations for a specific file."""
+        content = self.repo_analyzer.file_contents.get(file_path)
+        if not content:
+            return {"error": "File not found"}
+            
+        try:
+            # Create a message for code review
+            prompt = f"""Please review this code and provide specific recommendations for improvement. 
+Focus on:
+1. Code quality and maintainability
+2. Potential bugs or edge cases
+3. Performance optimizations
+4. Security concerns (if applicable)
+5. Best practices for this language
+
+Here's the code:
+```
+{content}
+```
+
+Provide your recommendations in a structured, concise format.
+"""
+            
+            # Send to Claude for analysis
+            response = self.client.messages.create(
+                model=self.model_name,
+                max_tokens=2000,
+                system="You are an expert code reviewer. Provide specific, actionable recommendations. Be concise and focus on the most important issues.",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            # Extract the response
+            return response.content[0].text
+                
+        except Exception as e:
+            logger.error(f"Error generating code recommendations: {e}")
+            return {"error": f"Analysis failed: {str(e)}"}
 
 
 class GitHubClient:

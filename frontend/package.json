@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build-ignore-ts": "next build --no-lint",
+    "build-force": "tsc --noEmit --skipLibCheck false && next build || next build",
     "start": "next start",
     "lint": "next lint"
   },

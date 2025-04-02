@@ -4,7 +4,9 @@ import {
   FileStructure, 
   RelevantFile, 
   RepoInfo, 
-  Commit 
+  Commit,
+  CodeMetrics,
+  FileChange
 } from '../types';
 import * as apiService from '../services/apiService';
 
@@ -21,6 +23,11 @@ export default function useRepositoryState() {
   const [currentInput, setCurrentInput] = useState('');
   const [fileContent, setFileContent] = useState<RelevantFile | null>(null);
   const [relevantFiles, setRelevantFiles] = useState<string[]>([]);
+  
+  // AI Model state
+  const [useClaudeModel, setUseClaudeModel] = useState<boolean>(false);
+  const [selectedModel, setSelectedModel] = useState<string>('models/gemini-2.0-flash');
+  const [codeMetrics, setCodeMetrics] = useState<CodeMetrics | null>(null);
   
   // Commit state
   const [commitHistory, setCommitHistory] = useState<Commit[]>([]);
@@ -246,214 +253,119 @@ export default function useRepositoryState() {
     }
   };
   
+  // Toggle AI model between Claude and Gemini
+  const toggleModel = () => {
+    setUseClaudeModel(prev => {
+      // When switching models, select the default for each provider
+      if (!prev) {
+        // Switching to Claude
+        setSelectedModel('claude-3-sonnet');
+      } else {
+        // Switching to Gemini
+        setSelectedModel('models/gemini-2.0-flash');
+      }
+      return !prev;
+    });
+  };
+
+  // Change the selected AI model
+  const changeModel = (modelName: string) => {
+    setSelectedModel(modelName);
+  };
+
+  // Request code metrics for a file
+  const requestCodeMetrics = async (filePath: string) => {
+    try {
+      setLoading(true);
+      const response = await apiService.analyzeCode(repoUrl, filePath, accessToken || undefined);
+      if (response.status === 'success') {
+        setCodeMetrics(response.complexity_metrics);
+        
+        // Check if recommendations are already available
+        if (response.recommendations_status === 'processing') {
+          // Poll for recommendations
+          setTimeout(async () => {
+            const recResponse = await apiService.getCodeRecommendations(repoUrl, filePath);
+            if (recResponse.status === 'success') {
+              setCodeMetrics((prev) => {
+                if (!prev) return null;
+                return {
+                  ...prev,
+                  recommendations: recResponse.recommendations
+                };
+              });
+            }
+          }, 3000);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching code metrics:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
   // Send message to chatbot
   const sendMessage = async () => {
-    if (!currentInput.trim() || !repoUrl || loading) return;
+    if (!currentInput.trim() || loading) return;
     
-    // Check for direct commit reference patterns:
-    // 1. Just a hash: "b82d0fb"
-    // 2. Prefixed hash: "Commit b82d0fb"
-    const simpleHashRegex = /\b[0-9a-f]{6,40}\b/i;
-    const commitPrefixRegex = /\b(?:commit|hash)[\s:]*([0-9a-f]{6,40})\b/i;
-    
-    let commitHash = null;
-    
-    // Check for prefixed commit pattern first (more specific)
-    const prefixMatch = currentInput.match(commitPrefixRegex);
-    if (prefixMatch && prefixMatch[1]) {
-      commitHash = prefixMatch[1];
-    } else {
-      // Fall back to simple hash detection
-      const simpleMatch = currentInput.match(simpleHashRegex);
-      if (simpleMatch) {
-        commitHash = simpleMatch[0];
-      }
-    }
-    
-    // Handle commit references, but distinguish between:
-    // 1. Just wanting to see commit info
-    // 2. Wanting to chat about the commit
-    if (commitHash) {
-      const isQuestionAboutCommit = 
-        currentInput.toLowerCase().includes('what') || 
-        currentInput.toLowerCase().includes('why') || 
-        currentInput.toLowerCase().includes('how') || 
-        currentInput.toLowerCase().includes('explain') ||
-        currentInput.toLowerCase().includes('tell me about') ||
-        currentInput.toLowerCase().includes('changes');
-      
-      // First, add the user's message to the chat
-      const userMessage: ChatMessage = {
-        role: 'user',
-        content: currentInput,
-      };
-      
-      setMessages(prev => [...prev, userMessage]);
-      setCurrentInput('');
-      setLoading(true);
-      
-      try {
-        // First, look up the commit to show its details
-        const data = await apiService.fetchCommitByHash(
-          repoUrl,
-          commitHash,
-          accessToken || undefined
-        );
-        
-        if (data.status === 'success') {
-          const commit = data.commit;
-          
-          // Show the commit details in chat
-          const commitDetails = `**Commit ${commit.short_hash}**
-          
-Message: ${commit.message}
-Author: ${commit.author}
-Date: ${new Date(commit.date).toLocaleString()}
-Files changed: ${commit.stats.files_changed}
-
-${commit.file_changes && commit.file_changes.length > 0 
-  ? 'Files:\n' + commit.file_changes.map((file: {path: string, change_type: string}) => 
-    `- ${file.path} (${file.change_type})`).join('\n')
-  : 'No file changes found'}`;
-          
-          // Add commit details to chat
-          setMessages((prev: ChatMessage[]) => [...prev, {
-            role: 'assistant',
-            content: commitDetails
-          }]);
-          
-          // Also show in the commit viewer
-          viewCommitDetails(data.commit);
-          
-          // Update URL with commit hash
-          const url = new URL(window.location.href);
-          url.searchParams.set('commit', data.commit.short_hash);
-          window.history.pushState({}, '', url);
-          
-          // If it's a question about the commit, send a follow-up question to the AI
-          if (isQuestionAboutCommit) {
-            const loadingMessage: ChatMessage = {
-              role: 'assistant',
-              content: 'Analyzing commit...',
-            };
-            setMessages((prev: ChatMessage[]) => [...prev, loadingMessage]);
-            
-            // Construct a detailed prompt for the AI
-            const detailedPrompt = `Please analyze this commit:
-            Hash: ${commit.short_hash}
-            Message: ${commit.message}
-            Author: ${commit.author}
-            Date: ${new Date(commit.date).toLocaleString()}
-            Files changed: ${commit.file_changes.map((f: {path: string, change_type: string}) => f.path).join(', ')}
-            
-            The user is asking: ${currentInput}
-            
-            Please provide a detailed explanation of what this commit does, what problems it might be fixing, and why these changes were made.`;
-            
-            const aiPromptMessage: ChatMessage = {
-              role: 'user', 
-              content: detailedPrompt
-            };
-            
-            // Send to the API but don't show this message in the chat
-            try {
-              const analysisData = await apiService.sendChatMessage(
-                repoUrl,
-                [...messages, userMessage, aiPromptMessage],
-                accessToken || undefined
-              );
-              
-              // Remove loading message
-              setMessages((prev: ChatMessage[]) => prev.filter(m => m !== loadingMessage));
-              
-              // Add the analysis response
-              if (analysisData.status === 'success') {
-                setMessages((prev: ChatMessage[]) => [...prev, analysisData.message]);
-                
-                // Update relevant files if any
-                if (analysisData.relevant_files && analysisData.relevant_files.length > 0) {
-                  setRelevantFiles(analysisData.relevant_files);
-                } else {
-                  // If no relevant files provided by AI, use the files from the commit
-                  setRelevantFiles(commit.file_changes.map((f: {path: string, change_type: string}) => f.path));
-                }
-              }
-            } catch (error) {
-              console.error('Error getting commit analysis:', error);
-              setMessages((prev: ChatMessage[]) => [...prev.filter(m => m !== loadingMessage), {
-                role: 'assistant',
-                content: 'I had trouble analyzing this commit. You can ask me another question about it or view the details in the commit panel.'
-              }]);
-            }
-          }
-        } else {
-          // Commit not found
-          setMessages((prev: ChatMessage[]) => [...prev, {
-            role: 'assistant',
-            content: `I couldn't find commit "${commitHash}". Please check the hash and try again.`
-          }]);
-        }
-      } catch (error) {
-        console.error('Error processing commit reference:', error);
-        setMessages((prev: ChatMessage[]) => [...prev, {
-          role: 'assistant',
-          content: `Sorry, there was an error processing your request: ${error instanceof Error ? error.message : 'Unknown error'}`
-        }]);
-      } finally {
-        setLoading(false);
-      }
-      
-      return;
-    }
-
-    // Regular message handling (not commit-specific)
     const userMessage: ChatMessage = {
       role: 'user',
       content: currentInput,
     };
-
-    setMessages((prev: ChatMessage[]) => [...prev, userMessage]);
+    
+    // Add user message to chat
+    setMessages(prev => [...prev, userMessage, { role: 'assistant', content: '...' }]);
     setCurrentInput('');
     setLoading(true);
     
-    const loadingMessage: ChatMessage = {
-      role: 'assistant',
-      content: '...',
-    };
-    setMessages((prev: ChatMessage[]) => [...prev, loadingMessage]);
-
+    // Focus chat input field for next message
+    if (chatInputRef.current) {
+      chatInputRef.current.focus();
+    }
+    
     try {
-      const data = await apiService.sendChatMessage(
-        repoUrl, 
-        [...messages, userMessage], 
-        accessToken || undefined
-      );
+      // Call the appropriate API based on the selected model
+      let response;
+      if (useClaudeModel) {
+        response = await apiService.sendChatMessageToAI(
+          repoUrl, 
+          [...messages, userMessage], 
+          accessToken || undefined,
+          selectedModel,
+          'claude'
+        );
+      } else {
+        response = await apiService.sendChatMessageToAI(
+          repoUrl, 
+          [...messages, userMessage], 
+          accessToken || undefined,
+          selectedModel,
+          'gemini'
+        );
+      }
       
-      if (data.status === 'success') {
-        // Remove the loading message
-        setMessages((prev: ChatMessage[]) => prev.filter(m => m !== loadingMessage));
-        
-        // Add the real response
-        setMessages((prev: ChatMessage[]) => [...prev, data.message]);
-        setRelevantFiles(data.relevant_files || []);
-        
-        // Store relevant commits with details
-        if (data.relevant_commits && data.relevant_commits.length > 0) {
-          setCommitHistory(prev => [...prev, ...data.relevant_commits]);
-        }
+      // Update messages with the response
+      setMessages(prev => [
+        ...prev.slice(0, prev.length - 1), // Remove loading message
+        {
+          role: 'assistant',
+          content: response.response || response.message?.content || 'I had trouble processing that request.',
+        },
+      ]);
+      
+      // Update relevant files
+      if (response.relevant_files) {
+        setRelevantFiles(response.relevant_files);
       }
     } catch (error) {
       console.error('Error sending message:', error);
-      
-      // Remove the loading message
-      setMessages((prev: ChatMessage[]) => prev.filter(m => m !== loadingMessage));
-      
-      setMessages((prev: ChatMessage[]) => [
-        ...prev,
+      setMessages(prev => [
+        ...prev.slice(0, prev.length - 1), // Remove loading message
         {
           role: 'assistant',
-          content: 'Sorry, there was an error processing your request. Please try again.'
-        }
+          content: 'Sorry, I encountered an error processing your request. Please try again.',
+        },
       ]);
     } finally {
       setLoading(false);
@@ -534,7 +446,7 @@ ${commit.file_changes && commit.file_changes.length > 0
           updatedFileChanges[fileIndex] = {
             ...updatedFileChanges[fileIndex],
             displayContent: data.content
-          };
+          } as FileChange;
           
           return {
             ...prev,
@@ -767,6 +679,14 @@ ${commit.file_changes && commit.file_changes.length > 0
     toggleFileDiff,
     lookupCommitByHash,
     copyToChat,
-    clearChatHistory
+    clearChatHistory,
+    
+    // AI Model state
+    useClaudeModel,
+    selectedModel,
+    codeMetrics,
+    toggleModel,
+    changeModel,
+    requestCodeMetrics,
   };
 } 

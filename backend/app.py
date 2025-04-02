@@ -7,13 +7,14 @@ import os
 import json
 import logging
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, Body
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, Body, Security, status
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, SecurityScopes
+from pydantic import BaseModel, Field, EmailStr
 import asyncio
 import aiohttp
 from github import Github
@@ -22,6 +23,19 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
 from dotenv import load_dotenv
+
+# Database and caching imports
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Boolean, Float, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship, Session
+from sqlalchemy.sql import func
+from redis import Redis
+from celery import Celery
+import uuid
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from cryptography.fernet import Fernet
+from rank_bm25 import BM25Okapi
 
 # Load environment variables
 load_dotenv()
@@ -34,7 +48,182 @@ logging.basicConfig(
 logger = logging.getLogger('reposage')
 
 # Import RepoAnalyzer from existing chatbot module
-from chatbot import RepoAnalyzer, GeminiClient
+from chatbot import RepoAnalyzer, GeminiClient, ClaudeClient
+
+# Database configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./reposage.db")
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# Redis configuration
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
+
+# Celery configuration
+celery_app = Celery(
+    "reposage",
+    broker=REDIS_URL,
+    backend=REDIS_URL
+)
+
+# Security configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "".join([str(uuid.uuid4()) for _ in range(2)]))
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Encryption for sensitive data
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
+fernet = Fernet(ENCRYPTION_KEY.encode())
+
+# Database models
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True)
+    username = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    repositories = relationship("Repository", back_populates="owner")
+    api_keys = relationship("ApiKey", back_populates="user")
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    key_name = Column(String, index=True)
+    key_prefix = Column(String, index=True)
+    hashed_key = Column(String)
+    encrypted_key = Column(String)
+    service = Column(String)  # "github", "anthropic", "gemini", etc.
+    user_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, server_default=func.now())
+    
+    user = relationship("User", back_populates="api_keys")
+
+class Repository(Base):
+    __tablename__ = "repositories"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    full_name = Column(String, index=True)
+    url = Column(String, index=True)
+    description = Column(Text)
+    default_branch = Column(String)
+    local_path = Column(String)
+    last_analyzed = Column(DateTime)
+    owner_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, server_default=func.now())
+    
+    owner = relationship("User", back_populates="repositories")
+    commits = relationship("Commit", back_populates="repository")
+    files = relationship("File", back_populates="repository")
+    metrics = relationship("RepositoryMetrics", back_populates="repository", uselist=False)
+
+class Commit(Base):
+    __tablename__ = "commits"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    hash = Column(String, index=True)
+    short_hash = Column(String, index=True)
+    message = Column(Text)
+    author = Column(String)
+    author_email = Column(String)
+    date = Column(DateTime)
+    files_changed = Column(Integer)
+    insertions = Column(Integer)
+    deletions = Column(Integer)
+    repository_id = Column(Integer, ForeignKey("repositories.id"))
+    
+    repository = relationship("Repository", back_populates="commits")
+    file_changes = relationship("FileChange", back_populates="commit")
+
+class File(Base):
+    __tablename__ = "files"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    path = Column(String, index=True)
+    size = Column(Integer)
+    binary = Column(Boolean, default=False)
+    repository_id = Column(Integer, ForeignKey("repositories.id"))
+    
+    repository = relationship("Repository", back_populates="files")
+    metrics = relationship("FileMetrics", back_populates="file", uselist=False)
+    changes = relationship("FileChange", back_populates="file")
+
+class FileChange(Base):
+    __tablename__ = "file_changes"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    change_type = Column(String)  # "added", "modified", "deleted", "renamed"
+    old_path = Column(String)
+    new_path = Column(String)
+    insertions = Column(Integer)
+    deletions = Column(Integer)
+    file_id = Column(Integer, ForeignKey("files.id"))
+    commit_id = Column(Integer, ForeignKey("commits.id"))
+    
+    file = relationship("File", back_populates="changes")
+    commit = relationship("Commit", back_populates="file_changes")
+
+class FileMetrics(Base):
+    __tablename__ = "file_metrics"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    file_id = Column(Integer, ForeignKey("files.id"), unique=True)
+    lines_of_code = Column(Integer)
+    cyclomatic_complexity = Column(Float)
+    maintainability_index = Column(Float)
+    comment_ratio = Column(Float)
+    last_updated = Column(DateTime, server_default=func.now())
+    
+    file = relationship("File", back_populates="metrics")
+
+class RepositoryMetrics(Base):
+    __tablename__ = "repository_metrics"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    repository_id = Column(Integer, ForeignKey("repositories.id"), unique=True)
+    total_files = Column(Integer)
+    total_lines = Column(Integer)
+    avg_complexity = Column(Float)
+    technical_debt_score = Column(Float)
+    commit_frequency = Column(Float)  # Average commits per day
+    contributor_count = Column(Integer)
+    last_updated = Column(DateTime, server_default=func.now())
+    
+    repository = relationship("Repository", back_populates="metrics")
+
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String, unique=True, index=True)
+    repository_id = Column(Integer, ForeignKey("repositories.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, server_default=func.now())
+    
+    messages = relationship("ChatMessage", back_populates="session")
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    role = Column(String)  # "user" or "assistant"
+    content = Column(Text)
+    timestamp = Column(DateTime, server_default=func.now())
+    session_id = Column(Integer, ForeignKey("chat_sessions.id"))
+    
+    session = relationship("ChatSession", back_populates="messages")
+
+# Create database tables
+Base.metadata.create_all(bind=engine)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -55,6 +244,14 @@ app.add_middleware(
 # Cache for repositories analyzed
 repo_cache = {}
 
+# Database dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 # Pydantic models for request and response objects
 class RepoRequest(BaseModel):
     repo_url: str
@@ -70,7 +267,8 @@ class ChatRequest(BaseModel):
     repo_url: str
     messages: List[ChatMessage]
     access_token: Optional[str] = None
-    model_name: Optional[str] = "models/gemini-1.5-pro"  # Add model selection option
+    model_name: Optional[str] = "models/gemini-2.0-flash"  # Default model
+    model_provider: Optional[str] = "gemini"  # 'gemini' or 'claude'
 
 class CommitInfo(BaseModel):
     hash: str
@@ -228,11 +426,17 @@ async def get_file_content(request: Dict[str, str] = Body(...)):
 
 @app.post("/api/chat")
 async def chat_with_repo(chat_request: ChatRequest):
-    """Chat with repository assistant."""
+    """Chat with repository assistant using Gemini models."""
     repo_url = chat_request.repo_url
     messages = chat_request.messages
     access_token = chat_request.access_token
-    model_name = chat_request.model_name or "models/gemini-1.5-pro"  # Default model
+    model_name = chat_request.model_name
+    
+    # Handle different Gemini models
+    if not model_name or model_name == "default":
+        model_name = "models/gemini-2.0-flash"  # Default model
+    elif model_name == "gemini-2.0-flash":
+        model_name = "models/gemini-2.0-flash"
     
     # Check if repo is already cached
     if repo_url not in repo_cache:
@@ -248,13 +452,354 @@ async def chat_with_repo(chat_request: ChatRequest):
         
         return {
             "status": "success",
-            "message": response["message"],
-            "relevant_files": response.get("relevant_files", []),
-            "relevant_commits": response.get("relevant_commits", [])
+            "response": response
         }
     except Exception as e:
-        logger.error(f"Error in chat with repo: {e}")
+        logger.error(f"Error in chat processing: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
+
+@app.post("/api/chat/claude")
+async def chat_with_claude(chat_request: ChatRequest, background_tasks: BackgroundTasks):
+    """Chat with repository assistant using Claude models."""
+    repo_url = chat_request.repo_url
+    messages = chat_request.messages
+    access_token = chat_request.access_token
+    model_name = chat_request.model_name
+    
+    # Handle different Claude models
+    if not model_name or model_name == "default":
+        model_name = "claude-3-sonnet-20240229"  # Default Claude model
+    elif model_name == "claude-3-opus":
+        model_name = "claude-3-opus-20240229"
+    elif model_name == "claude-3-haiku":
+        model_name = "claude-3-haiku-20240307"
+    
+    # Check if repo is already cached
+    if repo_url not in repo_cache:
+        # Analyze repo if not cached (will be a blocking operation)
+        await fetch_and_analyze_repo(repo_url, access_token)
+    
+    # Create Claude client with repo analysis
+    claude_client = ClaudeClient(repo_cache[repo_url]["analyzer"], model_name=model_name)
+    
+    # For streaming responses
+    async def stream_claude_response():
+        try:
+            # Use Claude's streaming capability
+            async for chunk in await claude_client.chat(messages):
+                # Convert to SSE format
+                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+        except Exception as e:
+            logger.error(f"Error in Claude streaming: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+    
+    # Return a streaming response
+    return StreamingResponse(stream_claude_response(), media_type="text/event-stream")
+
+@app.post("/api/code-analysis")
+async def analyze_file_code(
+    background_tasks: BackgroundTasks,
+    file_analysis_request: Dict[str, str] = Body(...)
+):
+    """Analyze code complexity and provide recommendations for a specific file."""
+    repo_url = file_analysis_request.get("repo_url")
+    file_path = file_analysis_request.get("file_path")
+    access_token = file_analysis_request.get("access_token")
+    
+    if not repo_url or not file_path:
+        raise HTTPException(status_code=400, detail="repo_url and file_path are required")
+    
+    # Check if repo is already cached
+    if repo_url not in repo_cache:
+        # Analyze repo if not cached
+        await fetch_and_analyze_repo(repo_url, access_token)
+    
+    # Create Claude client
+    claude_client = ClaudeClient(repo_cache[repo_url]["analyzer"])
+    
+    # Get complexity metrics
+    complexity_metrics = claude_client.analyze_code_complexity(file_path)
+    
+    # Get code recommendations in background
+    background_tasks.add_task(cache_code_recommendations, repo_url, file_path, claude_client)
+    
+    return {
+        "status": "success",
+        "file_path": file_path,
+        "complexity_metrics": complexity_metrics,
+        "recommendations_status": "processing"
+    }
+
+async def cache_code_recommendations(repo_url, file_path, claude_client):
+    """Background task to generate and cache code recommendations."""
+    try:
+        recommendations = claude_client.generate_code_recommendations(file_path)
+        
+        # Cache the recommendations
+        cache_key = f"recommendations:{repo_url}:{file_path}"
+        redis_client.set(cache_key, json.dumps(recommendations))
+        redis_client.expire(cache_key, 3600 * 24)  # Expire after 24 hours
+        
+        logger.info(f"Cached recommendations for {file_path}")
+    except Exception as e:
+        logger.error(f"Error generating recommendations: {e}")
+
+@app.get("/api/code-recommendations/{repo_url}/{file_path}")
+async def get_code_recommendations(
+    repo_url: str,
+    file_path: str
+):
+    """Get cached code recommendations for a file."""
+    # URL-decode the file path
+    import urllib.parse
+    file_path = urllib.parse.unquote(file_path)
+    
+    # Check cache
+    cache_key = f"recommendations:{repo_url}:{file_path}"
+    cached = redis_client.get(cache_key)
+    
+    if cached:
+        return {
+            "status": "success",
+            "file_path": file_path,
+            "recommendations": json.loads(cached)
+        }
+    else:
+        return {
+            "status": "not_ready",
+            "message": "Recommendations are still being generated"
+        }
+
+@app.post("/api/ast-analysis")
+async def analyze_code_ast(request: Dict[str, str] = Body(...)):
+    """Analyze code AST for deeper understanding of code structure."""
+    repo_url = request.get("repo_url")
+    file_path = request.get("file_path")
+    access_token = request.get("access_token")
+    
+    if not repo_url or not file_path:
+        raise HTTPException(status_code=400, detail="repo_url and file_path are required")
+    
+    # Check if repo is already cached
+    if repo_url not in repo_cache:
+        # Analyze repo if not cached
+        await fetch_and_analyze_repo(repo_url, access_token)
+    
+    # Get file content
+    analyzer = repo_cache[repo_url]["analyzer"]
+    content = analyzer.file_contents.get(file_path)
+    
+    if not content:
+        raise HTTPException(status_code=404, detail=f"File {file_path} not found in repository")
+    
+    # Determine file type and parse appropriately
+    ast_result = {"functions": [], "classes": [], "imports": [], "file_path": file_path}
+    
+    try:
+        if file_path.endswith(".py"):
+            # Python AST analysis
+            import ast
+            tree = ast.parse(content)
+            
+            # Extract imports
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for name in node.names:
+                        ast_result["imports"].append({"name": name.name, "alias": name.asname})
+                elif isinstance(node, ast.ImportFrom):
+                    for name in node.names:
+                        ast_result["imports"].append({
+                            "name": f"{node.module}.{name.name}" if node.module else name.name,
+                            "alias": name.asname
+                        })
+                        
+            # Extract functions
+            for node in tree.body:
+                if isinstance(node, ast.FunctionDef):
+                    ast_result["functions"].append({
+                        "name": node.name,
+                        "line": node.lineno,
+                        "args": [arg.arg for arg in node.args.args],
+                        "docstring": ast.get_docstring(node)
+                    })
+                elif isinstance(node, ast.ClassDef):
+                    methods = []
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef):
+                            methods.append({
+                                "name": item.name,
+                                "line": item.lineno,
+                                "args": [arg.arg for arg in item.args.args],
+                                "docstring": ast.get_docstring(item)
+                            })
+                    
+                    ast_result["classes"].append({
+                        "name": node.name,
+                        "line": node.lineno,
+                        "bases": [base.id for base in node.bases if hasattr(base, 'id')],
+                        "methods": methods,
+                        "docstring": ast.get_docstring(node)
+                    })
+        
+        elif file_path.endswith((".js", ".jsx", ".ts", ".tsx")):
+            # Use Claude to parse JavaScript/TypeScript
+            claude_client = ClaudeClient(analyzer)
+            prompt = f"""Analyze this code file and extract:
+1. All function definitions with their names, parameters, and start line numbers
+2. All class definitions with their names, methods, and inheritance
+3. All import statements
+
+Format the output as valid JSON with these fields:
+- functions: array of {{"name": string, "line": number, "args": [string], "docstring": string or null}}
+- classes: array of {{"name": string, "line": number, "methods": [same as functions], "bases": [string]}}
+- imports: array of {{"name": string, "alias": string or null}}
+
+Here's the code to analyze:
+```
+{content}
+```
+"""
+            response = claude_client.client.messages.create(
+                model=claude_client.model_name,
+                max_tokens=2000,
+                system="You are a code structure analyzer. Extract code structure information from the provided file. Output ONLY valid JSON.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            # Extract JSON response from Claude
+            try:
+                import re
+                text = response.content[0].text
+                # Extract JSON part of response using regex
+                match = re.search(r'```json\n(.*?)\n```', text, re.DOTALL)
+                if match:
+                    json_text = match.group(1)
+                else:
+                    json_text = text
+                
+                parsed = json.loads(json_text)
+                ast_result.update(parsed)
+            except Exception as e:
+                logger.error(f"Error parsing Claude AST response: {e}")
+                ast_result["error"] = "Failed to parse code structure"
+            
+        else:
+            ast_result["error"] = "Unsupported file type for AST analysis"
+    
+    except Exception as e:
+        logger.error(f"Error in AST analysis: {e}")
+        ast_result["error"] = str(e)
+    
+    return ast_result
+
+@app.post("/api/technical-debt")
+async def calculate_technical_debt(request: Dict[str, Any] = Body(...)):
+    """Calculate technical debt score for a repository."""
+    repo_url = request.get("repo_url")
+    access_token = request.get("access_token")
+    
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="repo_url is required")
+    
+    # Check if repo is already cached
+    if repo_url not in repo_cache:
+        # Analyze repo if not cached
+        await fetch_and_analyze_repo(repo_url, access_token)
+    
+    analyzer = repo_cache[repo_url]["analyzer"]
+    
+    # Create a technical debt calculator
+    technical_debt = {
+        "repository": os.path.basename(analyzer.repo.working_dir),
+        "score": 0.0,
+        "metrics": {
+            "code_complexity": 0.0,
+            "documentation": 0.0,
+            "test_coverage": 0.0,
+            "code_duplication": 0.0,
+            "outdated_dependencies": 0.0
+        },
+        "files": []
+    }
+    
+    # Use Claude to analyze complexity
+    claude_client = ClaudeClient(analyzer)
+    
+    # Sample a subset of files for analysis
+    analyzable_extensions = ('.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.cs')
+    files_to_analyze = [
+        path for path in analyzer.file_contents.keys() 
+        if path.endswith(analyzable_extensions) and len(analyzer.file_contents[path]) > 0
+    ]
+    
+    # Cap at 20 files for performance
+    import random
+    if len(files_to_analyze) > 20:
+        files_to_analyze = random.sample(files_to_analyze, 20)
+    
+    total_complexity = 0.0
+    file_complexities = []
+    
+    # Analyze each file
+    for file_path in files_to_analyze:
+        try:
+            metrics = claude_client.analyze_code_complexity(file_path)
+            if not isinstance(metrics, dict) or "error" in metrics:
+                continue
+                
+            complexity = metrics.get("metrics", {}).get("cyclomatic_complexity", 0)
+            maintainability = metrics.get("metrics", {}).get("maintainability_index", 0)
+            
+            # Add to total
+            total_complexity += complexity
+            
+            # Store file metrics
+            file_complexities.append({
+                "file": file_path,
+                "complexity": complexity,
+                "maintainability": maintainability
+            })
+        except Exception as e:
+            logger.error(f"Error analyzing file {file_path}: {e}")
+    
+    # Calculate average complexity
+    avg_complexity = total_complexity / len(file_complexities) if file_complexities else 0
+    
+    # Sort files by complexity (highest first)
+    file_complexities.sort(key=lambda x: x["complexity"], reverse=True)
+    
+    # Calculate overall technical debt score (0-100, higher means more debt)
+    technical_debt["metrics"]["code_complexity"] = min(100, avg_complexity * 10)  # Scale appropriately
+    
+    # Find documentation level
+    documentation_files = [
+        path for path in analyzer.file_contents.keys() 
+        if path.lower().endswith(('.md', '.rst', '.txt')) or "doc" in path.lower()
+    ]
+    doc_ratio = len(documentation_files) / len(analyzer.file_contents) if analyzer.file_contents else 0
+    technical_debt["metrics"]["documentation"] = max(0, 100 - (doc_ratio * 500))  # Higher score means worse docs
+    
+    # Find test coverage approximation
+    test_files = [
+        path for path in analyzer.file_contents.keys() 
+        if "test" in path.lower() or path.lower().endswith(('_test.py', '.test.js', 'spec.js', 'test_'))
+    ]
+    test_ratio = len(test_files) / len(analyzer.file_contents) if analyzer.file_contents else 0
+    technical_debt["metrics"]["test_coverage"] = max(0, 100 - (test_ratio * 500))  # Higher score means worse testing
+    
+    # Overall score (weighted average)
+    technical_debt["score"] = (
+        technical_debt["metrics"]["code_complexity"] * 0.4 +
+        technical_debt["metrics"]["documentation"] * 0.3 +
+        technical_debt["metrics"]["test_coverage"] * 0.3
+    )
+    
+    # Add the top 10 most complex files
+    technical_debt["files"] = file_complexities[:10]
+    
+    return technical_debt
 
 @app.post("/api/file-content-at-commit")
 async def get_file_content_at_commit(request: Dict[str, str] = Body(...)):
@@ -448,6 +993,243 @@ async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
     except Exception as e:
         logger.error(f"Error getting commit by hash: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
+
+# Authentication helper functions
+def verify_password(plain_password, hashed_password):
+    """Verify that the plain password matches the hashed password."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    """Generate password hash."""
+    return pwd_context.hash(password)
+
+def authenticate_user(db: Session, username: str, password: str):
+    """Authenticate user with username and password."""
+    user = db.query(User).filter(User.username == username).first()
+    if not user or not verify_password(password, user.hashed_password):
+        return False
+    return user
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """Create JWT access token."""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(security_scopes: SecurityScopes, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    """Get current user from token."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+async def get_current_active_user(current_user: User = Security(get_current_user, scopes=["user"])):
+    """Get current active user."""
+    if not current_user.is_active:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user
+
+# User schema models
+class UserCreate(BaseModel):
+    email: EmailStr
+    username: str
+    password: str
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    username: str
+    is_admin: bool
+    is_active: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+    scopes: List[str] = []
+
+# User authentication endpoints
+@app.post("/api/register", response_model=UserResponse)
+async def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    """Register a new user."""
+    # Check if user already exists
+    db_user = db.query(User).filter(
+        (User.email == user.email) | (User.username == user.username)
+    ).first()
+    if db_user:
+        if db_user.email == user.email:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        else:
+            raise HTTPException(status_code=400, detail="Username already taken")
+    
+    # Create new user
+    hashed_password = get_password_hash(user.password)
+    new_user = User(
+        email=user.email,
+        username=user.username,
+        hashed_password=hashed_password
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+@app.post("/api/token", response_model=Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    """Generate access token for user login."""
+    user = authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username, "scopes": ["user"]}, 
+        expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/api/users/me", response_model=UserResponse)
+async def read_users_me(current_user: User = Depends(get_current_active_user)):
+    """Get current user info."""
+    return current_user
+
+@app.post("/api/apikeys")
+async def create_api_key(
+    key_name: str = Body(...), 
+    service: str = Body(...), 
+    key_value: str = Body(...),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Store an encrypted API key for a service."""
+    # Generate a key prefix for identification (first 4 chars)
+    key_prefix = key_value[:4]
+    
+    # Hash the key for verification
+    hashed_key = get_password_hash(key_value)
+    
+    # Encrypt the full key for storage
+    encrypted_key = fernet.encrypt(key_value.encode()).decode()
+    
+    # Create the API key entry
+    api_key = ApiKey(
+        key_name=key_name,
+        key_prefix=key_prefix,
+        hashed_key=hashed_key,
+        encrypted_key=encrypted_key,
+        service=service,
+        user_id=current_user.id
+    )
+    
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+    
+    return {"status": "success", "message": f"API key '{key_name}' created successfully"}
+
+# The endpoint to replace the existing /api/chat endpoint
+@app.post("/api/chat/debug")
+async def debug_chat_endpoint(request: Request):
+    """
+    Debug endpoint that accepts any JSON payload without strict validation.
+    
+    This endpoint helps diagnose 422 Unprocessable Entity errors by:
+    1. Accepting any JSON data without Pydantic validation
+    2. Logging the full request data
+    3. Returning a response confirming receipt
+    """
+    # Log that we're using the debug endpoint
+    logger.info("Using debug chat endpoint to bypass validation")
+    
+    try:
+        # Parse the raw JSON from the request
+        data = await request.json()
+        
+        # Log detailed information about the request
+        logger.info(f"Received data: {json.dumps(data, indent=2)}")
+        
+        # Extract key information if available
+        repo_url = data.get("repo_url", "No repo URL provided")
+        messages = data.get("messages", [])
+        model_name = data.get("model_name", "models/gemini-2.0-flash")  # Default model
+        
+        message_count = len(messages)
+        model_info = f"Model: {model_name}, Provider: {data.get('model_provider', 'default')}"
+        
+        logger.info(f"Request info - Repo: {repo_url}, Messages: {message_count}, {model_info}")
+        
+        # Check if repo is already cached
+        if repo_url in repo_cache:
+            logger.info(f"Repository {repo_url} found in cache")
+            try:
+                # Create Gemini client with repo analysis
+                gemini_client = GeminiClient(repo_cache[repo_url]["analyzer"], model_name=model_name)
+                
+                logger.info(f"Attempting to generate a response with {model_name}")
+                
+                # Process the chat messages
+                try:
+                    response = await gemini_client.chat(messages)
+                    return {
+                        "status": "success",
+                        "response": response
+                    }
+                except Exception as e:
+                    logger.error(f"Error in chat processing: {e}")
+                    return {
+                        "status": "error",
+                        "message": f"Error processing chat: {str(e)}",
+                        "data_received": data
+                    }
+            except Exception as e:
+                logger.error(f"Error creating Gemini client: {e}")
+                return {
+                    "status": "error",
+                    "message": f"Repository found in cache, but error creating client: {str(e)}",
+                    "data_received": data
+                }
+        else:
+            # If repo is not cached, just return confirmation
+            return {
+                "status": "success",
+                "message": "Debug endpoint received your data successfully, but repository is not cached",
+                "data_received": data
+            }
+    
+    except Exception as e:
+        # Log any errors that occur
+        logger.error(f"Error in debug endpoint: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"Error processing request: {str(e)}",
+            "note": "This endpoint should accept any JSON data - if you're seeing this error, there might be an issue with your JSON format"
+        }
 
 if __name__ == "__main__":
     # Run server
