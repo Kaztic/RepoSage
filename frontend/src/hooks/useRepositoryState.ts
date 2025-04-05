@@ -599,7 +599,7 @@ export default function useRepositoryState() {
   };
   
   // Look up a commit by hash
-  const lookupCommitByHash = async (hash?: string) => {
+  const lookupCommitByHash = async (hash?: string, attempt: number = 1) => {
     const commitHash = hash || commitHashInput.trim();
     if (!repoUrl || !commitHash) return;
     
@@ -614,7 +614,7 @@ export default function useRepositoryState() {
       };
       setMessages((prev: ChatMessage[]) => [...prev, tempMessage]);
       
-      console.log(`Looking up commit hash: ${commitHash}`);
+      console.log(`Looking up commit hash: ${commitHash} (attempt ${attempt})`);
       const data = await apiService.fetchCommitByHash(
         repoUrl,
         commitHash,
@@ -629,16 +629,18 @@ export default function useRepositoryState() {
         setMessages((prev: ChatMessage[]) => prev.filter(m => m !== tempMessage));
         
         // Format commit details for chat
+        const fileNote = commit.stats.note ? `\n\n*Note: ${commit.stats.note}*` : '';
         const commitDetails = `**Commit ${commit.short_hash}** (${commit.hash})
         
 Message: ${commit.message}
 Author: ${commit.author}
 Date: ${new Date(commit.date).toLocaleString()}
-Files changed: ${commit.stats.files_changed}
+Files changed: ${commit.stats.files_changed}${fileNote}
 
 ${commit.file_changes && commit.file_changes.length > 0 
-  ? 'Files:\n' + commit.file_changes.map((file: {path: string, change_type: string}) => 
-    `- ${file.path} (${file.change_type})`).join('\n')
+  ? 'Files:\n' + commit.file_changes.slice(0, 15).map((file: {path: string, change_type: string}) => 
+    `- ${file.path} (${file.change_type})`).join('\n') + 
+    (commit.file_changes.length > 15 ? `\n\n*...and ${commit.file_changes.length - 15} more files*` : '')
   : 'No file changes found'}`;
         
         // Add commit details to chat
@@ -661,6 +663,18 @@ ${commit.file_changes && commit.file_changes.length > 0
           role: 'assistant',
           content: 'Is there anything specific you\'d like to know about this commit? You can ask me to explain the changes or analyze what this commit does.'
         }]);
+      } else if (data.message && data.message.includes("timed out") && attempt < 3) {
+        // Handle timeout by trying again with a retry
+        setMessages((prev: ChatMessage[]) => prev.filter(m => m !== tempMessage));
+        setMessages((prev: ChatMessage[]) => [...prev, {
+          role: 'assistant',
+          content: `The commit lookup is taking longer than expected. Retrying... (${attempt}/3)`
+        }]);
+        
+        // Wait a bit before retrying
+        setTimeout(() => {
+          lookupCommitByHash(commitHash, attempt + 1);
+        }, 2000);
       } else {
         // Remove the temporary message
         setMessages((prev: ChatMessage[]) => prev.filter(m => m !== tempMessage));
@@ -674,6 +688,24 @@ ${commit.file_changes && commit.file_changes.length > 0
     } catch (error) {
       console.error('Error looking up commit by hash:', error);
       
+      // If it's a network error and we haven't tried too many times yet, retry
+      if (error instanceof Error && error.message.includes('network') && attempt < 3) {
+        setMessages((prev: ChatMessage[]) => prev.filter(m => 
+          m.content !== `Looking up commit ${commitHash}...`
+        ));
+        
+        setMessages((prev: ChatMessage[]) => [...prev, {
+          role: 'assistant',
+          content: `Network error while looking up commit. Retrying... (${attempt}/3)`
+        }]);
+        
+        // Wait a bit before retrying
+        setTimeout(() => {
+          lookupCommitByHash(commitHash, attempt + 1);
+        }, 2000);
+        return;
+      }
+      
       // Show error in chat
       setMessages((prev: ChatMessage[]) => {
         // Filter out the temporary loading message
@@ -684,7 +716,11 @@ ${commit.file_changes && commit.file_changes.length > 0
         // Add error message
         return [...filteredMessages, {
           role: 'assistant',
-          content: `Error looking up commit: ${error instanceof Error ? error.message : 'There was a problem retrieving the commit information. Please try again.'}`
+          content: `Error looking up commit: ${error instanceof Error 
+            ? (error.message.includes("timeout") 
+               ? "The request timed out. This commit might be very large. Try a different commit." 
+               : error.message)
+            : 'There was a problem retrieving the commit information. Please try again.'}`
         }];
       });
     } finally {

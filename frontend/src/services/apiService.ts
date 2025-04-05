@@ -62,12 +62,37 @@ export const fetchCommitByHash = async (
   commitHash: string, 
   accessToken?: string
 ) => {
-  const response = await axios.post(`${API_BASE_URL}/api/commit-by-hash`, {
-    repo_url: repoUrl,
-    commit_hash: commitHash,
-    access_token: accessToken || undefined,
-  });
-  return response.data;
+  try {
+    // Use a longer timeout for potentially large commits
+    const response = await axios.post(
+      `${API_BASE_URL}/api/commit-by-hash`, 
+      {
+        repo_url: repoUrl,
+        commit_hash: commitHash,
+        access_token: accessToken || undefined,
+      },
+      {
+        timeout: 60000, // 60 second timeout for large commits
+      }
+    );
+    return response.data;
+  } catch (error) {
+    console.error("Error fetching commit by hash:", error);
+    
+    // Handle timeout errors specifically
+    if (axios.isAxiosError(error) && error.code === 'ECONNABORTED') {
+      return {
+        status: 'error',
+        message: 'Request timed out. This commit might be very large or complex to process.'
+      };
+    }
+    
+    // Return structured error
+    return {
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Unknown error occurred'
+    };
+  }
 };
 
 export const fetchFileContentAtCommit = async (

@@ -206,8 +206,13 @@ class RepoAnalyzer:
         
         return commits
     
-    def get_commit_by_hash(self, commit_hash: str) -> Optional[Dict[str, Any]]:
-        """Retrieve a specific commit by hash."""
+    def get_commit_by_hash(self, commit_hash: str, max_files: int = 200) -> Optional[Dict[str, Any]]:
+        """Retrieve a specific commit by hash.
+        
+        Args:
+            commit_hash: The hash of the commit to retrieve
+            max_files: Maximum number of files to process to avoid timeouts
+        """
         try:
             # First try to find in cached history
             for commit in self.commit_history:
@@ -217,13 +222,6 @@ class RepoAnalyzer:
             
             # If not found, try to get directly from git
             try:
-                # Try fetching from origin to ensure we have the commit
-                try:
-                    logger.info(f"Attempting to fetch commit {commit_hash} from origin")
-                    self.repo.git.fetch("origin", commit_hash)
-                except Exception as e:
-                    logger.warning(f"Could not fetch commit {commit_hash} from origin: {e}")
-                
                 # Now try to get the commit
                 commit = self.repo.commit(commit_hash)
                 
@@ -237,97 +235,177 @@ class RepoAnalyzer:
                     "file_changes": []
                 }
                 
-                # Get detailed file changes
-                file_changes = []
-                if commit.parents:
-                    parent = commit.parents[0]
-                    diff_index = parent.diff(commit)
+                # Get basic stats first - using git command directly can be faster
+                try:
+                    # Get summary stats using git show
+                    stats_summary = self.repo.git.show(
+                        commit.hexsha, 
+                        '--stat',
+                        '--format=',  # No commit info, just stats
+                    )
                     
-                    total_insertions = 0
-                    total_deletions = 0
-                    
-                    for diff in diff_index:
-                        change_type = "modified"
-                        if diff.new_file:
-                            change_type = "added"
-                        elif diff.deleted_file:
-                            change_type = "deleted"
-                        elif diff.renamed:
-                            change_type = "renamed"
-                        
-                        # Determine the path to show
-                        path = None
-                        if hasattr(diff, 'b_path') and diff.b_path:
-                            path = diff.b_path
-                        elif hasattr(diff, 'a_path') and diff.a_path:
-                            path = diff.a_path
-                        else:
-                            # Skip files with no path information
-                            continue
-                        
-                        try:
-                            # Try to get stats
+                    # Extract summary stats from last line if possible
+                    if stats_summary:
+                        last_line = stats_summary.strip().split('\n')[-1]
+                        if 'changed' in last_line and ('insertion' in last_line or 'deletion' in last_line):
+                            parts = last_line.split(',')
+                            files_changed = 0
                             insertions = 0
                             deletions = 0
                             
-                            try:
-                                # GitPython doesn't directly provide line stats per file
-                                # We'll use git diff --numstat instead
-                                stats_output = self.repo.git.diff(
-                                    parent.hexsha, 
-                                    commit.hexsha, 
-                                    '--numstat',
-                                    path
-                                )
-                                
-                                if stats_output.strip():
-                                    stats_parts = stats_output.strip().split('\t')
-                                    if len(stats_parts) >= 3:
-                                        try:
-                                            insertions = int(stats_parts[0]) if stats_parts[0] != '-' else 0
-                                            deletions = int(stats_parts[1]) if stats_parts[1] != '-' else 0
-                                        except ValueError:
-                                            # Binary files show as '-' in numstat
-                                            pass
-                            except Exception as e:
-                                logger.warning(f"Error getting stats for {path}: {e}")
+                            for part in parts:
+                                part = part.strip()
+                                if 'file' in part:
+                                    try:
+                                        files_changed = int(part.split()[0])
+                                    except (ValueError, IndexError):
+                                        pass
+                                elif 'insertion' in part:
+                                    try:
+                                        insertions = int(part.split()[0])
+                                    except (ValueError, IndexError):
+                                        pass
+                                elif 'deletion' in part:
+                                    try:
+                                        deletions = int(part.split()[0])
+                                    except (ValueError, IndexError):
+                                        pass
                             
-                            total_insertions += insertions
-                            total_deletions += deletions
-                            
-                            # Add file change info with stats
-                            file_changes.append({
-                                "path": path,
-                                "change_type": change_type,
+                            commit_info["stats"] = {
+                                "files_changed": files_changed,
                                 "insertions": insertions,
                                 "deletions": deletions
-                            })
-                        except Exception as e:
-                            logger.warning(f"Error processing stats for {path}: {e}")
-                            # Add basic file change info without stats
+                            }
+                except Exception as e:
+                    logger.warning(f"Error getting summary stats: {e}")
+                
+                # Process file changes with limits
+                file_changes = []
+                file_count = 0
+                total_insertions = 0
+                total_deletions = 0
+                
+                if commit.parents:
+                    parent = commit.parents[0]
+                    
+                    # Use git diff-tree for better performance with large commits
+                    try:
+                        # Get name-status format which is much faster
+                        diff_output = self.repo.git.diff_tree(
+                            '-r',  # recursive
+                            '--name-status',  # just show names and status, not content
+                            parent.hexsha,
+                            commit.hexsha
+                        )
+                        
+                        # Process the output
+                        for line in diff_output.strip().split('\n'):
+                            if not line or '\t' not in line:
+                                continue
+                                
+                            # Stop if we've reached the limit
+                            if file_count >= max_files:
+                                logger.warning(f"Reached maximum file limit ({max_files}), truncating results")
+                                break
+                                
+                            status, path = line.split('\t', 1)
+                            status = status.strip()
+                            
+                            # Map git status to our change types
+                            change_type = "modified"
+                            if status == 'A':
+                                change_type = "added"
+                            elif status == 'D':
+                                change_type = "deleted"
+                            elif status == 'R':
+                                change_type = "renamed"
+                            
+                            # Add basic file change info
                             file_changes.append({
                                 "path": path,
                                 "change_type": change_type,
                                 "insertions": 0,
                                 "deletions": 0
                             })
+                            
+                            file_count += 1
+                            
+                    except Exception as e:
+                        logger.warning(f"Error processing diff-tree: {e}")
+                        
+                        # Fallback - use GitPython's diff but with limits
+                        try:
+                            diff_index = parent.diff(commit)
+                            for diff in diff_index:
+                                # Stop if we've reached the limit
+                                if file_count >= max_files:
+                                    logger.warning(f"Reached maximum file limit ({max_files}), truncating results")
+                                    break
+                                    
+                                change_type = "modified"
+                                if diff.new_file:
+                                    change_type = "added"
+                                elif diff.deleted_file:
+                                    change_type = "deleted"
+                                elif diff.renamed:
+                                    change_type = "renamed"
+                                
+                                # Determine the path to show
+                                path = None
+                                if hasattr(diff, 'b_path') and diff.b_path:
+                                    path = diff.b_path
+                                elif hasattr(diff, 'a_path') and diff.a_path:
+                                    path = diff.a_path
+                                else:
+                                    # Skip files with no path information
+                                    continue
+                                
+                                # Add basic file change info
+                                file_changes.append({
+                                    "path": path,
+                                    "change_type": change_type,
+                                    "insertions": 0,
+                                    "deletions": 0
+                                })
+                                
+                                file_count += 1
+                        except Exception as e:
+                            logger.warning(f"Error processing diffs: {e}")
                 else:
-                    # Initial commit - all files are added
-                    for entry in commit.tree.traverse():
-                        if entry.type == 'blob':  # File not directory
-                            file_changes.append({
-                                "path": entry.path,
-                                "change_type": "added",
-                                "insertions": 0,
-                                "deletions": 0
-                            })
+                    # Initial commit handling - limit file count
+                    try:
+                        # Use git ls-tree which is faster than traversing the tree
+                        ls_tree_output = self.repo.git.ls_tree('-r', commit.hexsha)
+                        
+                        for line in ls_tree_output.strip().split('\n'):
+                            if not line:
+                                continue
+                                
+                            # Stop if we've reached the limit
+                            if file_count >= max_files:
+                                logger.warning(f"Reached maximum file limit ({max_files}), truncating results")
+                                break
+                                
+                            # Format is: mode type hash\tpath
+                            if '\t' in line:
+                                file_path = line.split('\t', 1)[1]
+                                file_changes.append({
+                                    "path": file_path,
+                                    "change_type": "added",
+                                    "insertions": 0,
+                                    "deletions": 0
+                                })
+                                
+                                file_count += 1
+                    except Exception as e:
+                        logger.warning(f"Error listing files in initial commit: {e}")
                 
-                # Update commit stats
-                commit_info["stats"] = {
-                    "files_changed": len(file_changes),
-                    "insertions": total_insertions,
-                    "deletions": total_deletions
-                }
+                # Update stats if we had to limit files
+                if file_count == max_files and commit_info["stats"]["files_changed"] > max_files:
+                    commit_info["stats"]["files_changed"] = max_files
+                    commit_info["stats"]["note"] = f"Display limited to {max_files} files"
+                
+                # Set the file changes
                 commit_info["file_changes"] = file_changes
                 
                 return commit_info

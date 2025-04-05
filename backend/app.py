@@ -918,65 +918,85 @@ async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
     if not repo_url or not commit_hash:
         raise HTTPException(status_code=400, detail="Repository URL and commit hash are required")
     
-    # Check if we already have this repo in cache
-    if repo_url in repo_cache:
-        repo_analyzer = repo_cache[repo_url]["analyzer"]
-        logger.info(f"Found repo in cache: {repo_url}")
-    else:
-        logger.info(f"Repo not in cache, cloning: {repo_url}")
-        # Clone and analyze if needed
+    # Create a background task for long-running operations
+    async def fetch_commit_info():
         try:
-            clone_dir = os.path.join(tempfile.gettempdir(), f"reposage_{uuid.uuid4().hex}")
-            os.makedirs(clone_dir, exist_ok=True)
-            
-            # Clone the repository
-            if access_token:
-                parsed_url = repo_url.strip('/')
-                if parsed_url.startswith('https://github.com/'):
-                    auth_url = f"https://{access_token}@github.com/{'/'.join(parsed_url.split('/')[3:])}"
-                else:
-                    auth_url = repo_url  # Not a GitHub URL or unexpected format
+            # Check if we already have this repo in cache
+            if repo_url in repo_cache:
+                repo_analyzer = repo_cache[repo_url]["analyzer"]
+                logger.info(f"Found repo in cache: {repo_url}")
             else:
-                auth_url = repo_url
-                
-            logger.info(f"Cloning repository: {repo_url} to {clone_dir}")
-            Repo.clone_from(auth_url, clone_dir)
+                logger.info(f"Repo not in cache, cloning: {repo_url}")
+                # Clone and analyze if needed
+                try:
+                    clone_dir = os.path.join(tempfile.gettempdir(), f"reposage_{uuid.uuid4().hex}")
+                    os.makedirs(clone_dir, exist_ok=True)
+                    
+                    # Clone the repository
+                    if access_token:
+                        parsed_url = repo_url.strip('/')
+                        if parsed_url.startswith('https://github.com/'):
+                            auth_url = f"https://{access_token}@github.com/{'/'.join(parsed_url.split('/')[3:])}"
+                        else:
+                            auth_url = repo_url  # Not a GitHub URL or unexpected format
+                    else:
+                        auth_url = repo_url
+                        
+                    logger.info(f"Cloning repository: {repo_url} to {clone_dir}")
+                    repo = Repo.clone_from(auth_url, clone_dir, depth=200)  # Use depth to speed up clone
+                    
+                    # Create analyzer
+                    repo_analyzer = RepoAnalyzer(clone_dir)
+                    
+                    # Cache for future use
+                    repo_cache[repo_url] = {
+                        "analyzer": repo_analyzer,
+                        "path": clone_dir,
+                        "timestamp": datetime.now()
+                    }
+                except Exception as e:
+                    logger.error(f"Error cloning or analyzing repository: {e}")
+                    return {
+                        "status": "error",
+                        "message": f"Error processing repository: {str(e)}"
+                    }
             
-            # Create analyzer
-            repo_analyzer = RepoAnalyzer(clone_dir)
+            # Get the commit details
+            logger.info(f"Getting commit details for hash: {commit_hash}")
             
-            # Cache for future use
-            repo_cache[repo_url] = {
-                "analyzer": repo_analyzer,
-                "path": clone_dir,
-                "timestamp": datetime.now()
+            # Use asyncio.wait_for to set a timeout
+            commit_info = repo_analyzer.get_commit_by_hash(commit_hash)
+            
+            if not commit_info:
+                logger.warning(f"Commit {commit_hash} not found")
+                return {
+                    "status": "error",
+                    "message": f"Commit {commit_hash} not found. Please check the hash and try again."
+                }
+            
+            logger.info(f"Successfully retrieved commit: {commit_info.get('short_hash')}")
+            return {
+                "status": "success",
+                "commit": commit_info
             }
         except Exception as e:
-            logger.error(f"Error cloning or analyzing repository: {e}")
-            raise HTTPException(status_code=500, detail=f"Error processing repository: {str(e)}")
-    
-    try:
-        # Get the commit details
-        logger.info(f"Getting commit details for hash: {commit_hash}")
-        commit_info = repo_analyzer.get_commit_by_hash(commit_hash)
-        
-        if not commit_info:
-            logger.warning(f"Commit {commit_hash} not found")
+            logger.error(f"Error retrieving commit by hash: {e}", exc_info=True)
             return {
                 "status": "error",
-                "message": f"Commit {commit_hash} not found. Please check the hash and try again."
+                "message": f"Error retrieving commit: {str(e)}"
             }
-        
-        logger.info(f"Successfully retrieved commit: {commit_info.get('short_hash')}")
-        return {
-            "status": "success",
-            "commit": commit_info
-        }
-    except Exception as e:
-        logger.error(f"Error retrieving commit by hash: {e}", exc_info=True)
+    
+    # Execute the background task with a timeout
+    try:
+        # Use a higher timeout for commit lookup
+        timeout_seconds = 30
+        result = await asyncio.wait_for(fetch_commit_info(), timeout=timeout_seconds)
+        return result
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout exceeded ({timeout_seconds}s) when retrieving commit {commit_hash}")
         return {
             "status": "error",
-            "message": f"Error retrieving commit: {str(e)}"
+            "message": f"Request timed out. The commit lookup is taking too long. Try with a more recent or common commit hash."
         }
 
 @app.post("/api/file-diff")
@@ -1693,6 +1713,8 @@ async def validate_git_repo(repo_url: str, access_token: Optional[str] = None) -
     from git.exc import GitCommandError
     import subprocess
     import re
+    import asyncio
+    from functools import partial
     
     result = {
         "valid": False,
@@ -1725,7 +1747,7 @@ async def validate_git_repo(repo_url: str, access_token: Optional[str] = None) -
             headers["Authorization"] = f"token {access_token}"
         
         try:
-            # Check if repo exists via GitHub API
+            # Check if repo exists via GitHub API - use a shorter timeout
             response = requests.get(api_url, headers=headers, timeout=5)
             
             if response.status_code == 200:
@@ -1750,10 +1772,12 @@ async def validate_git_repo(repo_url: str, access_token: Optional[str] = None) -
             return result
                 
         except requests.exceptions.RequestException as e:
+            logger.warning(f"GitHub API request error: {str(e)}")
             result["reason"] = f"Connection error: {str(e)}"
-            return result
+            
+            # Fall through to git ls-remote as a backup validation method
     
-    # For non-GitHub URLs or as a fallback, try git ls-remote
+    # For non-GitHub URLs or as a fallback, try git ls-remote with asyncio to handle timeouts better
     try:
         # Prepare the git command
         git_url = repo_url
@@ -1761,29 +1785,52 @@ async def validate_git_repo(repo_url: str, access_token: Optional[str] = None) -
             # Add token to URL for private repos
             git_url = git_url.replace('https://', f'https://{access_token}@')
         
-        # Use subprocess with a timeout to prevent hanging
-        process = subprocess.run(
-            ["git", "ls-remote", git_url, "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10  # 10 second timeout
-        )
+        # Create a function to run git ls-remote in a separate process
+        async def run_git_ls_remote():
+            loop = asyncio.get_event_loop()
+            try:
+                # Use a shorter timeout to avoid long waits
+                process = await loop.run_in_executor(
+                    None, 
+                    partial(
+                        subprocess.run,
+                        ["git", "ls-remote", git_url, "HEAD"],
+                        capture_output=True,
+                        text=True,
+                        timeout=8  # 8 second timeout
+                    )
+                )
+                
+                # Check if the command was successful
+                if process.returncode == 0:
+                    result["valid"] = True
+                    # Extract the HEAD commit hash
+                    if process.stdout.strip():
+                        commit_hash = process.stdout.split()[0]
+                        result["details"] = {
+                            "head_commit": commit_hash
+                        }
+                else:
+                    result["reason"] = f"Git error: {process.stderr.strip()}"
+                
+                return result
+            except subprocess.TimeoutExpired:
+                result["reason"] = "Timeout while validating repository"
+                return result
+            except Exception as e:
+                result["reason"] = f"Error validating repository: {str(e)}"
+                return result
         
-        # Check if the command was successful
-        if process.returncode == 0:
-            result["valid"] = True
-            # Extract the HEAD commit hash
-            if process.stdout.strip():
-                commit_hash = process.stdout.split()[0]
-                result["details"] = {
-                    "head_commit": commit_hash
-                }
-        else:
-            result["reason"] = f"Git error: {process.stderr.strip()}"
-            
-    except subprocess.TimeoutExpired:
-        result["reason"] = "Timeout while validating repository"
+        # Run with asyncio timeout
+        try:
+            # Use a slightly longer timeout for the overall operation
+            return await asyncio.wait_for(run_git_ls_remote(), timeout=10)
+        except asyncio.TimeoutError:
+            result["reason"] = "The repository validation timed out. The server might be unreachable."
+            return result
+        
     except Exception as e:
+        logger.error(f"Error in validate_git_repo: {str(e)}", exc_info=True)
         result["reason"] = f"Error validating repository: {str(e)}"
     
     return result
