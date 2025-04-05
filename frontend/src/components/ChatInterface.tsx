@@ -286,7 +286,7 @@ export default function ChatInterface({
                 {useClaudeModel 
                   ? (selectedModel === 'claude-3-opus' ? 'Claude Opus' : 
                      selectedModel === 'claude-3-haiku' ? 'Claude Haiku' : 'Claude Sonnet')
-                  : (selectedModel === 'models/gemini-2.0-flash' ? 'Gemini Flash' : 'Gemini Pro')}
+                  : (selectedModel === 'models/gemini-2.0-flash' ? 'Gemini 2.0 Flash' : 'Gemini 2.0 Flash Thinking')}
               </button>
               <svg className="w-3 h-3 ml-1 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -299,49 +299,6 @@ export default function ChatInterface({
                 onBlur={() => setShowModelSelect(false)}
               >
                 <div className="px-3 py-1 text-xs font-semibold text-gray-400 border-b border-gray-700">
-                  Claude Models
-                </div>
-                <button 
-                  onClick={() => {
-                    if (!useClaudeModel) onToggleModelProvider && onToggleModelProvider();
-                    onModelChange('claude-3-sonnet');
-                    setShowModelSelect(false);
-                  }}
-                  className={`flex items-center w-full px-3 py-2 text-sm hover:bg-gray-800 ${
-                    useClaudeModel && selectedModel === 'claude-3-sonnet' ? 'text-purple-400' : 'text-white'
-                  }`}
-                >
-                  <div className="w-2 h-2 rounded-full mr-2 bg-purple-500"></div>
-                  Claude 3 Sonnet
-                </button>
-                <button 
-                  onClick={() => {
-                    if (!useClaudeModel) onToggleModelProvider && onToggleModelProvider();
-                    onModelChange('claude-3-opus');
-                    setShowModelSelect(false);
-                  }}
-                  className={`flex items-center w-full px-3 py-2 text-sm hover:bg-gray-800 ${
-                    useClaudeModel && selectedModel === 'claude-3-opus' ? 'text-purple-400' : 'text-white'
-                  }`}
-                >
-                  <div className="w-2 h-2 rounded-full mr-2 bg-purple-700"></div>
-                  Claude 3 Opus
-                </button>
-                <button 
-                  onClick={() => {
-                    if (!useClaudeModel) onToggleModelProvider && onToggleModelProvider();
-                    onModelChange('claude-3-haiku');
-                    setShowModelSelect(false);
-                  }}
-                  className={`flex items-center w-full px-3 py-2 text-sm hover:bg-gray-800 ${
-                    useClaudeModel && selectedModel === 'claude-3-haiku' ? 'text-purple-400' : 'text-white'
-                  }`}
-                >
-                  <div className="w-2 h-2 rounded-full mr-2 bg-purple-300"></div>
-                  Claude 3 Haiku
-                </button>
-                
-                <div className="px-3 py-1 text-xs font-semibold text-gray-400 border-b border-gray-700 mt-1">
                   Gemini Models
                 </div>
                 <button 
@@ -355,19 +312,6 @@ export default function ChatInterface({
                   }`}
                 >
                   <div className="w-2 h-2 rounded-full mr-2 bg-blue-500"></div>
-                  Gemini 1.5 Pro
-                </button>
-                <button 
-                  onClick={() => {
-                    if (useClaudeModel) onToggleModelProvider && onToggleModelProvider();
-                    onModelChange('gemini-2.0-flash');
-                    setShowModelSelect(false);
-                  }}
-                  className={`flex items-center w-full px-3 py-2 text-sm hover:bg-gray-800 ${
-                    !useClaudeModel && selectedModel === 'gemini-2.0-flash' ? 'text-blue-400' : 'text-white'
-                  }`}
-                >
-                  <div className="w-2 h-2 rounded-full mr-2 bg-blue-300"></div>
                   Gemini 2.0 Flash
                 </button>
                 <button 

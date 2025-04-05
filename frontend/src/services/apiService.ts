@@ -173,4 +173,38 @@ export const getCodeRecommendations = async (
     access_token: accessToken || undefined,
   });
   return response.data;
+};
+
+/**
+ * Get detailed analysis of a file's content including functions and classes
+ */
+export const analyzeFileContent = async (
+  repoUrl: string,
+  filePath: string,
+  accessToken?: string
+) => {
+  const response = await axios.post(`${API_BASE_URL}/api/analyze-file-content`, {
+    repo_url: repoUrl,
+    file_path: filePath,
+    access_token: accessToken || undefined,
+  });
+  return response.data;
+};
+
+/**
+ * Search for a specific code element (function, class, method)
+ */
+export const searchCodeElement = async (
+  repoUrl: string,
+  elementName: string,
+  elementType: string = 'any',
+  accessToken?: string
+) => {
+  const response = await axios.post(`${API_BASE_URL}/api/search-code-element`, {
+    repo_url: repoUrl,
+    element_name: elementName,
+    element_type: elementType,
+    access_token: accessToken || undefined,
+  });
+  return response.data;
 }; 

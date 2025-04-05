@@ -1002,6 +1002,248 @@ async def get_file_diff(request: Dict[str, str] = Body(...)):
     
     return {"diff": diff_text}
 
+@app.post("/api/analyze-file-content")
+async def analyze_file_content(request: Dict[str, str] = Body(...)):
+    """
+    Analyze file content in detail to extract functions, classes and their implementations.
+    This provides more detailed information than the AST analysis.
+    """
+    repo_url = request.get("repo_url")
+    file_path = request.get("file_path")
+    access_token = request.get("access_token")
+    
+    if not repo_url or not file_path:
+        raise HTTPException(status_code=400, detail="repo_url and file_path are required")
+    
+    # Check if repo is already cached
+    if repo_url not in repo_cache:
+        # Analyze repo if not cached
+        await fetch_and_analyze_repo(repo_url, access_token)
+    
+    # Get file content
+    analyzer = repo_cache[repo_url]["analyzer"]
+    content = analyzer.file_contents.get(file_path)
+    
+    if not content:
+        raise HTTPException(status_code=404, detail=f"File {file_path} not found in repository")
+    
+    # Extract file extension
+    _, extension = os.path.splitext(file_path)
+    extension = extension.lower()
+    
+    result = {
+        "file_path": file_path,
+        "functions": [],
+        "classes": [],
+        "variables": [],
+        "code_segments": {}
+    }
+    
+    try:
+        if extension == '.py':
+            # Python file analysis
+            import ast
+            
+            # Parse the AST
+            tree = ast.parse(content)
+            
+            # Helper function to get source line ranges for nodes
+            def get_node_lines(node):
+                if hasattr(node, 'end_lineno'):
+                    # Python 3.8+ has end_lineno
+                    return node.lineno, node.end_lineno
+                
+                # For older Python versions, estimate the end line
+                content_lines = content.splitlines()
+                start_line = node.lineno
+                # Get source code for the node
+                if isinstance(node, ast.ClassDef) or isinstance(node, ast.FunctionDef):
+                    # Include decorator lines
+                    if node.decorator_list:
+                        start_line = min(d.lineno for d in node.decorator_list)
+                
+                # Rough estimation of end line for older Python versions
+                end_line = start_line
+                for i in range(start_line, len(content_lines) + 1):
+                    if i >= len(content_lines):
+                        break
+                    line = content_lines[i-1].strip()
+                    end_line = i
+                    
+                    # Check for indentation level to find the end of the function/class
+                    if i > start_line and (not line or line.startswith('def ') or line.startswith('class ')):
+                        if not line or line[0] not in ' \t':  # No indentation means end of block
+                            end_line = i - 1
+                            break
+                
+                return start_line, end_line
+            
+            # Extract functions and their source code
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    start_line, end_line = get_node_lines(node)
+                    function_code = "\n".join(content.splitlines()[start_line-1:end_line])
+                    
+                    function_info = {
+                        "name": node.name,
+                        "line_start": start_line,
+                        "line_end": end_line,
+                        "args": [arg.arg for arg in node.args.args],
+                        "docstring": ast.get_docstring(node),
+                        "code_id": f"func_{node.name}_{start_line}"
+                    }
+                    result["functions"].append(function_info)
+                    result["code_segments"][function_info["code_id"]] = function_code
+                
+                elif isinstance(node, ast.ClassDef):
+                    start_line, end_line = get_node_lines(node)
+                    class_code = "\n".join(content.splitlines()[start_line-1:end_line])
+                    
+                    methods = []
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef):
+                            method_start, method_end = get_node_lines(item)
+                            method_code = "\n".join(content.splitlines()[method_start-1:method_end])
+                            
+                            method_info = {
+                                "name": item.name,
+                                "line_start": method_start,
+                                "line_end": method_end,
+                                "args": [arg.arg for arg in item.args.args],
+                                "docstring": ast.get_docstring(item),
+                                "code_id": f"method_{node.name}_{item.name}_{method_start}"
+                            }
+                            methods.append(method_info)
+                            result["code_segments"][method_info["code_id"]] = method_code
+                    
+                    class_info = {
+                        "name": node.name,
+                        "line_start": start_line,
+                        "line_end": end_line,
+                        "bases": [base.id for base in node.bases if hasattr(base, 'id')],
+                        "methods": methods,
+                        "docstring": ast.get_docstring(node),
+                        "code_id": f"class_{node.name}_{start_line}"
+                    }
+                    result["classes"].append(class_info)
+                    result["code_segments"][class_info["code_id"]] = class_code
+                
+                elif isinstance(node, ast.Assign):
+                    # Extract top-level variables
+                    if node.lineno == node.end_lineno if hasattr(node, 'end_lineno') else True:
+                        for target in node.targets:
+                            if isinstance(target, ast.Name):
+                                var_line = node.lineno
+                                var_code = content.splitlines()[var_line-1]
+                                
+                                result["variables"].append({
+                                    "name": target.id,
+                                    "line": var_line,
+                                    "code_id": f"var_{target.id}_{var_line}"
+                                })
+                                result["code_segments"][f"var_{target.id}_{var_line}"] = var_code
+        
+        elif extension in ['.js', '.jsx', '.ts', '.tsx']:
+            # For JavaScript/TypeScript, use Claude to extract structure
+            claude_client = ClaudeClient(analyzer)
+            
+            prompt = f"""Analyze this code file and extract detailed information about:
+1. All function definitions with their complete implementations
+2. All class definitions with their complete method implementations
+3. Important variable declarations
+
+Format your response as valid JSON with these sections:
+- functions: array of objects with name, line_start, line_end, args (array), and complete code
+- classes: array of objects with name, line_start, line_end, methods (array of same structure as functions)
+- variables: array of important variable declarations
+
+Include the actual source code for each function, method, and class.
+
+Here's the code to analyze:
+```
+{content}
+```
+"""
+            response = claude_client.client.messages.create(
+                model="claude-3-sonnet-20240229",
+                max_tokens=8000,
+                system="You are a code structure analyzer. Extract detailed code structure information from the provided file and format it as valid JSON.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            try:
+                import re
+                text = response.content[0].text
+                
+                # Extract JSON part of response
+                match = re.search(r'```json\n(.*?)\n```', text, re.DOTALL)
+                if match:
+                    json_text = match.group(1)
+                else:
+                    # Try without json prefix
+                    match = re.search(r'```\n(.*?)\n```', text, re.DOTALL)
+                    if match:
+                        json_text = match.group(1)
+                    else:
+                        json_text = text
+                
+                parsed = json.loads(json_text)
+                
+                # Process functions
+                if "functions" in parsed:
+                    for i, func in enumerate(parsed["functions"]):
+                        code_id = f"func_{func['name']}_{func.get('line_start', i)}"
+                        func["code_id"] = code_id
+                        if "code" in func:
+                            result["code_segments"][code_id] = func["code"]
+                            del func["code"]
+                        result["functions"].append(func)
+                
+                # Process classes
+                if "classes" in parsed:
+                    for i, cls in enumerate(parsed["classes"]):
+                        code_id = f"class_{cls['name']}_{cls.get('line_start', i)}"
+                        cls["code_id"] = code_id
+                        if "code" in cls:
+                            result["code_segments"][code_id] = cls["code"]
+                            del cls["code"]
+                        
+                        # Process methods
+                        if "methods" in cls:
+                            for j, method in enumerate(cls["methods"]):
+                                method_code_id = f"method_{cls['name']}_{method['name']}_{method.get('line_start', j)}"
+                                method["code_id"] = method_code_id
+                                if "code" in method:
+                                    result["code_segments"][method_code_id] = method["code"]
+                                    del method["code"]
+                        
+                        result["classes"].append(cls)
+                
+                # Process variables
+                if "variables" in parsed:
+                    for i, var in enumerate(parsed["variables"]):
+                        code_id = f"var_{var['name']}_{var.get('line', i)}"
+                        var["code_id"] = code_id
+                        if "code" in var:
+                            result["code_segments"][code_id] = var["code"]
+                            del var["code"]
+                        result["variables"].append(var)
+            
+            except Exception as e:
+                logger.error(f"Error parsing Claude analysis response: {e}")
+                result["error"] = f"Failed to parse code structure: {str(e)}"
+        
+        else:
+            # For other file types, provide basic info
+            result["content"] = content
+            result["error"] = f"Detailed analysis not available for {extension} files"
+    
+    except Exception as e:
+        logger.error(f"Error in file content analysis: {e}")
+        result["error"] = str(e)
+    
+    return result
+
 # Authentication helper functions
 def verify_password(plain_password, hashed_password):
     """Verify that the plain password matches the hashed password."""
@@ -1238,6 +1480,178 @@ async def debug_chat_endpoint(request: Request):
             "message": f"Error processing request: {str(e)}",
             "note": "This endpoint should accept any JSON data - if you're seeing this error, there might be an issue with your JSON format"
         }
+
+@app.post("/api/search-code-element")
+async def search_code_element(request: Dict[str, str] = Body(...)):
+    """
+    Search for a specific function, class, or other code element across the codebase.
+    """
+    repo_url = request.get("repo_url")
+    element_name = request.get("element_name")
+    element_type = request.get("element_type", "any")  # function, class, method, or any
+    access_token = request.get("access_token")
+    
+    if not repo_url or not element_name:
+        raise HTTPException(status_code=400, detail="repo_url and element_name are required")
+    
+    # Check if repo is already cached
+    if repo_url not in repo_cache:
+        # Analyze repo if not cached
+        await fetch_and_analyze_repo(repo_url, access_token)
+    
+    # Get repo analyzer
+    analyzer = repo_cache[repo_url]["analyzer"]
+    
+    # Results container
+    results = {
+        "element_name": element_name,
+        "matches": []
+    }
+    
+    # Search through all files
+    for file_path, content in analyzer.file_contents.items():
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        # For Python files, use AST parsing for accurate results
+        if file_ext == '.py':
+            try:
+                import ast
+                tree = ast.parse(content)
+                
+                # Helper function to get source line ranges for nodes
+                def get_node_lines(node):
+                    if hasattr(node, 'end_lineno'):
+                        # Python 3.8+ has end_lineno
+                        return node.lineno, node.end_lineno
+                    
+                    # For older Python versions, estimate the end line
+                    content_lines = content.splitlines()
+                    start_line = node.lineno
+                    # Rough estimation of end line for older Python versions
+                    end_line = start_line
+                    for i in range(start_line, len(content_lines) + 1):
+                        if i >= len(content_lines):
+                            break
+                        line = content_lines[i-1].strip()
+                        end_line = i
+                        
+                        # Check for indentation level to find the end of the function/class
+                        if i > start_line and (not line or line.startswith('def ') or line.startswith('class ')):
+                            if not line or line[0] not in ' \t':  # No indentation means end of block
+                                end_line = i - 1
+                                break
+                
+                    return start_line, end_line
+                
+                # Look for functions/methods matching the element name
+                if element_type in ["function", "any"]:
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.FunctionDef) and node.name == element_name:
+                            # Get function source
+                            start_line, end_line = get_node_lines(node)
+                            source_lines = content.splitlines()[start_line-1:end_line]
+                            
+                            results["matches"].append({
+                                "type": "function",
+                                "file": file_path,
+                                "line_start": start_line,
+                                "line_end": end_line,
+                                "signature": f"def {node.name}({', '.join(arg.arg for arg in node.args.args)})",
+                                "docstring": ast.get_docstring(node),
+                                "source": "\n".join(source_lines)
+                            })
+                
+                # Look for classes matching the element name
+                if element_type in ["class", "any"]:
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.ClassDef) and node.name == element_name:
+                            # Get class source
+                            start_line, end_line = get_node_lines(node)
+                            source_lines = content.splitlines()[start_line-1:end_line]
+                            
+                            # Get methods
+                            methods = []
+                            for item in node.body:
+                                if isinstance(item, ast.FunctionDef):
+                                    method_start, method_end = get_node_lines(item)
+                                    methods.append({
+                                        "name": item.name,
+                                        "line_start": method_start,
+                                        "line_end": method_end,
+                                        "signature": f"def {item.name}({', '.join(arg.arg for arg in item.args.args)})"
+                                    })
+                            
+                            results["matches"].append({
+                                "type": "class",
+                                "file": file_path,
+                                "line_start": start_line,
+                                "line_end": end_line,
+                                "methods": methods,
+                                "docstring": ast.get_docstring(node),
+                                "source": "\n".join(source_lines)
+                            })
+                
+                # Look for methods in classes
+                if element_type in ["method", "any"]:
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.ClassDef):
+                            for item in node.body:
+                                if isinstance(item, ast.FunctionDef) and item.name == element_name:
+                                    # Get method source
+                                    method_start, method_end = get_node_lines(item)
+                                    method_source = "\n".join(content.splitlines()[method_start-1:method_end])
+                                    
+                                    results["matches"].append({
+                                        "type": "method",
+                                        "class": node.name,
+                                        "file": file_path,
+                                        "line_start": method_start,
+                                        "line_end": method_end,
+                                        "signature": f"def {item.name}({', '.join(arg.arg for arg in item.args.args)})",
+                                        "docstring": ast.get_docstring(item),
+                                        "source": method_source
+                                    })
+            except Exception as e:
+                logger.error(f"Error parsing Python file {file_path}: {e}")
+        
+        # For other file types, use regex pattern matching
+        else:
+            lines = content.splitlines()
+            
+            # Look for possible matches using regex
+            if element_type in ["function", "any"]:
+                for i, line in enumerate(lines):
+                    if re.search(fr'\bfunction\s+{re.escape(element_name)}\b|\b{re.escape(element_name)}\s*[:=]\s*function\b|\bdef\s+{re.escape(element_name)}\b', line, re.IGNORECASE):
+                        # Extract context (~20 lines)
+                        context_start = max(0, i-1)
+                        context_end = min(len(lines), i+20)
+                        source = "\n".join(lines[context_start:context_end])
+                        
+                        results["matches"].append({
+                            "type": "function",
+                            "file": file_path,
+                            "line_start": i+1,
+                            "signature": line.strip(),
+                            "source": source
+                        })
+            
+            if element_type in ["class", "any"]:
+                for i, line in enumerate(lines):
+                    if re.search(fr'\bclass\s+{re.escape(element_name)}\b', line, re.IGNORECASE):
+                        # Extract more context for classes (~50 lines)
+                        context_start = max(0, i-1)
+                        context_end = min(len(lines), i+50)
+                        source = "\n".join(lines[context_start:context_end])
+                        
+                        results["matches"].append({
+                            "type": "class",
+                            "file": file_path,
+                            "line_start": i+1,
+                            "signature": line.strip(),
+                            "source": source
+                        })
+    
+    return results
 
 if __name__ == "__main__":
     # Run server

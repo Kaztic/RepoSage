@@ -142,7 +142,7 @@ export default function useRepositoryState() {
     if (hashParam && repoUrl && repoInfo) {
       // If we have a hash parameter and the repo is loaded, look up the commit
       setCommitHashInput(hashParam);
-      lookupCommitByHash(hashParam);
+      setTimeout(() => lookupCommitByHash(hashParam), 0);
     }
   }, [repoUrl, repoInfo]);
   
@@ -263,19 +263,14 @@ export default function useRepositoryState() {
     }
   };
   
-  // Toggle AI model between Claude and Gemini
+  // Toggle AI model between available models
   const toggleModel = () => {
-    setUseClaudeModel(prev => {
-      // When switching models, select the default for each provider
-      if (!prev) {
-        // Switching to Claude
-        setSelectedModel('claude-3-sonnet');
-      } else {
-        // Switching to Gemini
-        setSelectedModel('models/gemini-2.0-flash');
-      }
-      return !prev;
-    });
+    // Since we're only using Gemini models, toggle between the two available models
+    if (selectedModel === 'models/gemini-2.0-flash') {
+      setSelectedModel('models/gemini-2.0-flash-thinking-exp-1219');
+    } else {
+      setSelectedModel('models/gemini-2.0-flash');
+    }
   };
 
   // Change the selected AI model
@@ -335,25 +330,14 @@ export default function useRepositoryState() {
     }
     
     try {
-      // Call the appropriate API based on the selected model
-      let response;
-      if (useClaudeModel) {
-        response = await apiService.sendChatMessageToAI(
-          repoUrl, 
-          [...messages, userMessage], 
-          accessToken || undefined,
-          selectedModel,
-          'claude'
-        );
-      } else {
-        response = await apiService.sendChatMessageToAI(
-          repoUrl, 
-          [...messages, userMessage], 
-          accessToken || undefined,
-          selectedModel,
-          'gemini'
-        );
-      }
+      // Call the API with the selected Gemini model
+      const response = await apiService.sendChatMessageToAI(
+        repoUrl, 
+        [...messages, userMessage], 
+        accessToken || undefined,
+        selectedModel,
+        'gemini'
+      );
       
       // Update messages with the response
       setMessages(prev => [

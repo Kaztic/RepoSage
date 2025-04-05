@@ -646,8 +646,135 @@ class GeminiClient:
         
         user_query = dict_messages[-1]["content"]
         
+        # Detect if the query is looking for specific code elements
+        code_search_patterns = [
+            r'function\s+(\w+)',
+            r'class\s+(\w+)',
+            r'method\s+(\w+)',
+            r'implementation\s+of\s+(\w+)',
+            r'how\s+does\s+(\w+)\s+work',
+            r'show\s+me\s+(\w+)',
+            r'find\s+(\w+)\s+in',
+            r'where\s+is\s+(\w+)\s+defined',
+            r'what\s+does\s+(\w+)\s+do'
+        ]
+        
+        possible_code_elements = []
+        for pattern in code_search_patterns:
+            matches = re.finditer(pattern, user_query, re.IGNORECASE)
+            for match in matches:
+                element_name = match.group(1)
+                if len(element_name) > 2:  # Filter out very short names
+                    possible_code_elements.append(element_name)
+        
         # Find relevant files for the query - increase number for more context
         relevant_files = self.repo_analyzer.search_relevant_files(user_query, top_k=10)
+        
+        # Enhanced code search when specific elements are mentioned
+        code_details = {}
+        if possible_code_elements:
+            logger.info(f"Detected code element search for: {possible_code_elements}")
+            for file_path, content in relevant_files:
+                # Basic code inspection (could be enhanced with AST parsing)
+                file_ext = os.path.splitext(file_path)[1].lower()
+                
+                # For Python files, use proper AST parsing
+                if file_ext == '.py':
+                    try:
+                        import ast
+                        tree = ast.parse(content)
+                        
+                        # Look for functions matching the elements
+                        for node in ast.walk(tree):
+                            if isinstance(node, ast.FunctionDef) and node.name in possible_code_elements:
+                                # Get function source
+                                func_lines = content.splitlines()[node.lineno-1:node.end_lineno if hasattr(node, 'end_lineno') else node.lineno+20]
+                                indent = len(func_lines[0]) - len(func_lines[0].lstrip())
+                                
+                                # Clean up indentation
+                                while all(not line.strip() or line[:indent].isspace() for line in func_lines):
+                                    func_lines = [line[indent:] if line.strip() else line for line in func_lines]
+                                    
+                                code_details[node.name] = {
+                                    "type": "function",
+                                    "file": file_path,
+                                    "line": node.lineno,
+                                    "docstring": ast.get_docstring(node),
+                                    "args": [arg.arg for arg in node.args.args],
+                                    "source": "\n".join(func_lines)
+                                }
+                            
+                            elif isinstance(node, ast.ClassDef) and node.name in possible_code_elements:
+                                # Get class source
+                                class_lines = content.splitlines()[node.lineno-1:node.end_lineno if hasattr(node, 'end_lineno') else node.lineno+50]
+                                indent = len(class_lines[0]) - len(class_lines[0].lstrip())
+                                
+                                # Clean up indentation
+                                while all(not line.strip() or line[:indent].isspace() for line in class_lines):
+                                    class_lines = [line[indent:] if line.strip() else line for line in class_lines]
+                                
+                                code_details[node.name] = {
+                                    "type": "class",
+                                    "file": file_path,
+                                    "line": node.lineno,
+                                    "docstring": ast.get_docstring(node),
+                                    "source": "\n".join(class_lines)
+                                }
+                                
+                                # Also look for methods in the class
+                                for item in node.body:
+                                    if isinstance(item, ast.FunctionDef) and item.name in possible_code_elements:
+                                        method_lines = content.splitlines()[item.lineno-1:item.end_lineno if hasattr(item, 'end_lineno') else item.lineno+20]
+                                        method_indent = len(method_lines[0]) - len(method_lines[0].lstrip())
+                                        
+                                        # Clean up method indentation
+                                        method_lines = [line[method_indent:] if line.strip() else line for line in method_lines]
+                                        
+                                        code_details[item.name] = {
+                                            "type": "method",
+                                            "class": node.name,
+                                            "file": file_path,
+                                            "line": item.lineno,
+                                            "docstring": ast.get_docstring(item),
+                                            "args": [arg.arg for arg in item.args.args],
+                                            "source": "\n".join(method_lines)
+                                        }
+                    except Exception as e:
+                        logger.error(f"Error parsing Python file {file_path}: {e}")
+                    
+                # Simple search for other file types
+                else:
+                    for element in possible_code_elements:
+                        lines = content.splitlines()
+                        
+                        # Look for function declarations
+                        for i, line in enumerate(lines):
+                            if re.search(fr'\bfunction\s+{re.escape(element)}\b|\b{re.escape(element)}\s*[:=]\s*function\b|\bdef\s+{re.escape(element)}\b', line):
+                                # Extract ~20 lines of context
+                                context_start = max(0, i-1)
+                                context_end = min(len(lines), i+20)
+                                
+                                code_details[element] = {
+                                    "type": "function/method",
+                                    "file": file_path,
+                                    "line": i+1,
+                                    "source": "\n".join(lines[context_start:context_end])
+                                }
+                                break
+                            
+                            # Look for class declarations
+                            elif re.search(fr'\bclass\s+{re.escape(element)}\b', line):
+                                # Extract ~50 lines of context for classes
+                                context_start = max(0, i-1)
+                                context_end = min(len(lines), i+50)
+                                
+                                code_details[element] = {
+                                    "type": "class",
+                                    "file": file_path,
+                                    "line": i+1,
+                                    "source": "\n".join(lines[context_start:context_end])
+                                }
+                                break
         
         # Find relevant commits for the query with detailed file changes
         relevant_commits = self.repo_analyzer.search_commit_history(user_query)
@@ -696,6 +823,7 @@ class GeminiClient:
                 {"path": path, "content": content[:1000] + "..." if len(content) > 1000 else content}
                 for path, content in important_files
             ],
+            "code_details": code_details,
             "relevant_commits": detailed_commits,
             "conversation_history": [
                 {"role": msg["role"], "content": msg["content"]} 
@@ -732,6 +860,10 @@ class GeminiClient:
         try:
             genai_model = genai.GenerativeModel(self.model_name)
             
+            # Check if this is a code-specific query
+            code_search_keywords = ['function', 'class', 'method', 'implementation', 'code', 'definition']
+            is_code_query = any(keyword in query.lower() for keyword in code_search_keywords)
+            
             prompt = f"""
             You are RepoSage, an AI assistant specialized in analyzing and explaining GitHub repositories.
             You should help the user understand repository structure, code, commits, and functionality.
@@ -745,8 +877,13 @@ class GeminiClient:
             USER QUESTION:
             {query}
             
+            {"IMPORTANT: When explaining code, always include the FULL implementation details and code snippets from the repository. If asked about a specific function or class, show its complete implementation with any relevant context." if is_code_query else ""}
+            
             Provide a clear and helpful response. If you refer to specific code or files, use markdown formatting
-            to make it easy to read. If you're not sure about something, be honest about your limitations.
+            with the appropriate language for syntax highlighting. If you're not sure about something, be honest about your limitations.
+            
+            If code_details contains implementations of functions or classes the user is asking about, 
+            be sure to include these in your response with proper formatting. Never truncate code samples.
             """
             
             # Create generator for streaming response
