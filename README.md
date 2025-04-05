@@ -95,3 +95,8 @@ For production deployment, we recommend:
 ## License
 
 MIT 
+
+
+# TO DO
+
+USE THIS MODEL - gemini-2.0-flash-thinking-exp-1219	

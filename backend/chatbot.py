@@ -211,11 +211,20 @@ class RepoAnalyzer:
         try:
             # First try to find in cached history
             for commit in self.commit_history:
-                if commit["hash"].startswith(commit_hash) or commit["short_hash"] == commit_hash:
+                # Check if the provided hash matches either the full hash or the short hash
+                if commit_hash == commit["hash"] or commit["hash"].startswith(commit_hash) or commit["short_hash"] == commit_hash:
                     return commit
             
             # If not found, try to get directly from git
             try:
+                # Try fetching from origin to ensure we have the commit
+                try:
+                    logger.info(f"Attempting to fetch commit {commit_hash} from origin")
+                    self.repo.git.fetch("origin", commit_hash)
+                except Exception as e:
+                    logger.warning(f"Could not fetch commit {commit_hash} from origin: {e}")
+                
+                # Now try to get the commit
                 commit = self.repo.commit(commit_hash)
                 
                 commit_info = {

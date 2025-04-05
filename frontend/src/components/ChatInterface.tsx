@@ -14,7 +14,7 @@ type ChatInterfaceProps = {
   loading: boolean;
   repoInfoExists: boolean;
   messagesEndRef: React.RefObject<HTMLDivElement>;
-  chatInputRef: React.RefObject<HTMLInputElement>;
+  chatInputRef: React.RefObject<HTMLTextAreaElement>;
   onInputChange: (value: string) => void;
   onSendMessage: () => void;
   selectedModel: string;
@@ -92,8 +92,34 @@ export default function ChatInterface({
     }
   }, []);
 
+  // Auto-resize textarea as user types
+  useEffect(() => {
+    const textarea = chatInputRef.current;
+    if (!textarea) return;
+    
+    const adjustHeight = () => {
+      textarea.style.height = 'auto';
+      const newHeight = Math.min(textarea.scrollHeight, 200); // Max height of 200px
+      textarea.style.height = `${newHeight}px`;
+    };
+    
+    // Set initial height
+    adjustHeight();
+    
+    // Listen for input events
+    textarea.addEventListener('input', adjustHeight);
+    return () => textarea.removeEventListener('input', adjustHeight);
+  }, [currentInput, chatInputRef]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Shift+Enter adds a new line
+    if (e.key === 'Enter' && e.shiftKey) {
+      // Allow default behavior (new line)
+      return;
+    }
+    
+    // Enter or Ctrl+Enter sends the message
+    if (e.key === 'Enter' && (!e.shiftKey || e.ctrlKey)) {
       e.preventDefault();
       onSendMessage();
     }
@@ -344,6 +370,19 @@ export default function ChatInterface({
                   <div className="w-2 h-2 rounded-full mr-2 bg-blue-300"></div>
                   Gemini 2.0 Flash
                 </button>
+                <button 
+                  onClick={() => {
+                    if (useClaudeModel) onToggleModelProvider && onToggleModelProvider();
+                    onModelChange('models/gemini-2.0-flash-thinking-exp-1219');
+                    setShowModelSelect(false);
+                  }}
+                  className={`flex items-center w-full px-3 py-2 text-sm hover:bg-gray-800 ${
+                    !useClaudeModel && selectedModel === 'models/gemini-2.0-flash-thinking-exp-1219' ? 'text-blue-400' : 'text-white'
+                  }`}
+                >
+                  <div className="w-2 h-2 rounded-full mr-2 bg-green-300"></div>
+                  Gemini 2.0 Flash Thinking
+                </button>
               </div>
             )}
           </div>
@@ -487,14 +526,16 @@ export default function ChatInterface({
           }}
           className="flex space-x-2"
         >
-          <input
+          <textarea
             ref={chatInputRef}
-            className="flex-1 bg-gray-800 border border-gray-700 rounded p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 min-h-[40px] max-h-[200px]"
+            className="flex-1 bg-gray-800 border border-gray-700 rounded p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 min-h-[40px] max-h-[200px] resize-y overflow-auto"
             placeholder="Ask about the repository..."
             value={currentInput}
             onChange={(e) => onInputChange(e.target.value)}
             disabled={loading || !repoInfoExists}
             onKeyDown={handleKeyDown}
+            rows={1}
+            style={{ lineHeight: '1.5' }}
           />
           <button
             type="submit"

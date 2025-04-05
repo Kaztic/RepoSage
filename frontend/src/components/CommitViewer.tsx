@@ -9,6 +9,7 @@ type CommitViewerProps = {
   onClose: () => void;
   onFetchFileContent: (commitHash: string, filePath: string, fileIndex: number) => void;
   onToggleFileDiff: (commitHash: string, filePath: string, fileIndex: number) => void;
+  onToggleFileContent: (commitHash: string, filePath: string, fileIndex: number) => void;
 };
 
 export default function CommitViewer({
@@ -16,7 +17,8 @@ export default function CommitViewer({
   onCopyToChat,
   onClose,
   onFetchFileContent,
-  onToggleFileDiff
+  onToggleFileDiff,
+  onToggleFileContent
 }: CommitViewerProps) {
   return (
     <div className="border-l border-gray-700 overflow-hidden bg-gray-800 flex flex-col">
@@ -37,10 +39,13 @@ export default function CommitViewer({
           <div>Date: {new Date(commit.date).toLocaleString()}</div>
           <div className="flex items-center">
             <span>Commit: {commit.short_hash}</span>
+            <span className="ml-2 text-xs text-gray-500 hidden md:inline truncate max-w-xs" title={commit.hash}>
+              (Full: {commit.hash})
+            </span>
             <button 
-              onClick={() => onCopyToChat(commit.short_hash)}
+              onClick={() => onCopyToChat(commit.hash)}
               className="ml-2 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-blue-300"
-              title="Copy hash to chat input"
+              title="Copy full hash to chat input"
             >
               Copy to Chat
             </button>
@@ -65,10 +70,10 @@ export default function CommitViewer({
               </div>
               <div className="flex space-x-2 mt-1">
                 <button 
-                  onClick={() => onFetchFileContent(commit.short_hash, file.path, idx)}
+                  onClick={() => onToggleFileContent(commit.short_hash, file.path, idx)}
                   className="text-xs text-blue-400 hover:text-blue-300"
                 >
-                  View file content
+                  {file.displayContent ? 'Hide file content' : 'View file content'}
                 </button>
                 <button 
                   onClick={() => onToggleFileDiff(commit.short_hash, file.path, idx)}

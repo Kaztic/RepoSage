@@ -44,8 +44,9 @@ export default function useRepositoryState() {
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const chatInputRef = useRef<HTMLInputElement>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const sidebarRef = useRef<HTMLDivElement>(null);
   
   // Load saved messages from localStorage when component mounts
   useEffect(() => {
@@ -470,6 +471,31 @@ export default function useRepositoryState() {
     }
   };
   
+  // Toggle file content visibility
+  const toggleFileContent = (commitHash: string, filePath: string, fileIndex: number) => {
+    setSelectedCommit((prev: Commit | null) => {
+      if (!prev) return prev;
+      
+      const updatedFileChanges = [...prev.file_changes];
+      
+      // If content is already displayed, hide it; otherwise show it
+      if (updatedFileChanges[fileIndex].displayContent) {
+        updatedFileChanges[fileIndex] = {
+          ...updatedFileChanges[fileIndex],
+          displayContent: undefined
+        };
+      } else {
+        // Fetch the content if we don't have it yet
+        fetchFileContentAtCommit(commitHash, filePath, fileIndex);
+      }
+      
+      return {
+        ...prev,
+        file_changes: updatedFileChanges
+      };
+    });
+  };
+  
   // Toggle file diff visibility
   const toggleFileDiff = (commitHash: string, filePath: string, fileIndex: number) => {
     setSelectedCommit((prev: Commit | null) => {
@@ -573,11 +599,13 @@ export default function useRepositoryState() {
       };
       setMessages((prev: ChatMessage[]) => [...prev, tempMessage]);
       
+      console.log(`Looking up commit hash: ${commitHash}`);
       const data = await apiService.fetchCommitByHash(
         repoUrl,
         commitHash,
         accessToken || undefined
       );
+      console.log('Commit lookup response:', data);
 
       if (data.status === 'success') {
         const commit = data.commit;
@@ -586,7 +614,7 @@ export default function useRepositoryState() {
         setMessages((prev: ChatMessage[]) => prev.filter(m => m !== tempMessage));
         
         // Format commit details for chat
-        const commitDetails = `**Commit ${commit.short_hash}**
+        const commitDetails = `**Commit ${commit.short_hash}** (${commit.hash})
         
 Message: ${commit.message}
 Author: ${commit.author}
@@ -610,7 +638,7 @@ ${commit.file_changes && commit.file_changes.length > 0
         
         // Update URL with commit hash
         const url = new URL(window.location.href);
-        url.searchParams.set('commit', data.commit.short_hash);
+        url.searchParams.set('commit', data.commit.hash);
         window.history.pushState({}, '', url);
 
         // Add a follow-up message to guide the user
@@ -625,7 +653,7 @@ ${commit.file_changes && commit.file_changes.length > 0
         // Add error message to chat
         setMessages((prev: ChatMessage[]) => [...prev, {
           role: 'assistant',
-          content: `Commit not found: ${data.message || 'Unknown error'}`
+          content: `Commit not found: ${data.message || 'The provided commit hash does not match any commits in this repository. Please check the hash and try again.'}`
         }]);
       }
     } catch (error) {
@@ -641,7 +669,7 @@ ${commit.file_changes && commit.file_changes.length > 0
         // Add error message
         return [...filteredMessages, {
           role: 'assistant',
-          content: `Error looking up commit: ${error instanceof Error ? error.message : 'Unknown error'}`
+          content: `Error looking up commit: ${error instanceof Error ? error.message : 'There was a problem retrieving the commit information. Please try again.'}`
         }];
       });
     } finally {
@@ -692,6 +720,7 @@ ${commit.file_changes && commit.file_changes.length > 0
     // Refs
     messagesEndRef,
     chatInputRef,
+    sidebarRef,
     
     // Actions
     setRepoUrl,
@@ -708,6 +737,7 @@ ${commit.file_changes && commit.file_changes.length > 0
     fetchFullCommitHistory,
     viewCommitDetails,
     fetchFileContentAtCommit,
+    toggleFileContent,
     toggleFileDiff,
     lookupCommitByHash,
     copyToChat,

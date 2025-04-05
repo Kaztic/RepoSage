@@ -438,6 +438,9 @@ async def chat_with_repo(chat_request: ChatRequest):
         model_name = "models/gemini-2.0-flash"  # Default model
     elif model_name == "gemini-2.0-flash":
         model_name = "models/gemini-2.0-flash"
+    elif model_name == "models/gemini-2.0-flash-thinking-exp-1219":
+        # This is already in the correct format, but we keep this explicit for clarity
+        model_name = "models/gemini-2.0-flash-thinking-exp-1219"
     
     # Check if repo is already cached
     if repo_url not in repo_cache:
@@ -879,13 +882,17 @@ async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
     commit_hash = request.get("commit_hash")
     access_token = request.get("access_token")
     
+    logger.info(f"Looking up commit by hash: {commit_hash} for repo: {repo_url}")
+    
     if not repo_url or not commit_hash:
         raise HTTPException(status_code=400, detail="Repository URL and commit hash are required")
     
     # Check if we already have this repo in cache
     if repo_url in repo_cache:
         repo_analyzer = repo_cache[repo_url]["analyzer"]
+        logger.info(f"Found repo in cache: {repo_url}")
     else:
+        logger.info(f"Repo not in cache, cloning: {repo_url}")
         # Clone and analyze if needed
         try:
             clone_dir = os.path.join(tempfile.gettempdir(), f"reposage_{uuid.uuid4().hex}")
@@ -910,20 +917,36 @@ async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
             # Cache for future use
             repo_cache[repo_url] = {
                 "analyzer": repo_analyzer,
-                "clone_dir": clone_dir,
+                "path": clone_dir,
                 "timestamp": datetime.now()
             }
         except Exception as e:
             logger.error(f"Error cloning or analyzing repository: {e}")
             raise HTTPException(status_code=500, detail=f"Error processing repository: {str(e)}")
     
-    # Get the commit details
-    commit_info = repo_analyzer.get_commit_by_hash(commit_hash)
-    
-    if not commit_info:
-        raise HTTPException(status_code=404, detail=f"Commit {commit_hash} not found")
-    
-    return commit_info
+    try:
+        # Get the commit details
+        logger.info(f"Getting commit details for hash: {commit_hash}")
+        commit_info = repo_analyzer.get_commit_by_hash(commit_hash)
+        
+        if not commit_info:
+            logger.warning(f"Commit {commit_hash} not found")
+            return {
+                "status": "error",
+                "message": f"Commit {commit_hash} not found. Please check the hash and try again."
+            }
+        
+        logger.info(f"Successfully retrieved commit: {commit_info.get('short_hash')}")
+        return {
+            "status": "success",
+            "commit": commit_info
+        }
+    except Exception as e:
+        logger.error(f"Error retrieving commit by hash: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Error retrieving commit: {str(e)}"
+        }
 
 @app.post("/api/file-diff")
 async def get_file_diff(request: Dict[str, str] = Body(...)):

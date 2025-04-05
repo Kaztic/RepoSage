@@ -5,6 +5,9 @@ import { ChatMessage } from '../types';
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 // Fixed Gemini model - use the standard model name that matches backend
+// Available models:
+// - models/gemini-2.0-flash (default)
+// - models/gemini-2.0-flash-thinking-exp-1219
 const GEMINI_MODEL = "models/gemini-2.0-flash";
 
 export const fetchRepoStructure = async (repoUrl: string, accessToken?: string) => {

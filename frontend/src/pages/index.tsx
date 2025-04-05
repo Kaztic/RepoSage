@@ -31,6 +31,7 @@ export default function Home() {
           onClose={() => repoState.setSelectedCommit(null)}
           onFetchFileContent={repoState.fetchFileContentAtCommit}
           onToggleFileDiff={repoState.toggleFileDiff} 
+          onToggleFileContent={repoState.toggleFileContent}
         />
       );
     }
