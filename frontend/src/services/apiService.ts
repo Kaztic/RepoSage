@@ -207,4 +207,18 @@ export const searchCodeElement = async (
     access_token: accessToken || undefined,
   });
   return response.data;
+};
+
+/**
+ * Validate if a GitHub repository URL is valid before attempting to analyze it
+ */
+export const validateRepository = async (
+  repoUrl: string,
+  accessToken?: string
+) => {
+  const response = await axios.post(`${API_BASE_URL}/api/validate-repo`, {
+    repo_url: repoUrl,
+    access_token: accessToken || undefined,
+  });
+  return response.data;
 }; 

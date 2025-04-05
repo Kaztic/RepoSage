@@ -169,6 +169,22 @@ export default function useRepositoryState() {
       setRelevantFiles([]);
       setFileContent(null);
       
+      // First, validate the repository URL
+      const validationResult = await apiService.validateRepository(repoUrl, accessToken || undefined);
+      
+      // Handle invalid repository URLs
+      if (!validationResult.valid) {
+        setAnalysisProgress(0);
+        setMessages([
+          {
+            role: 'assistant',
+            content: `❌ Error: Invalid repository. ${validationResult.reason || 'The repository could not be found or accessed.'}`,
+          },
+        ]);
+        setLoading(false);
+        return;
+      }
+      
       // Start a progress simulation to provide feedback during long operations
       pollingIntervalRef.current = setInterval(() => {
         setAnalysisProgress(prev => {
@@ -209,6 +225,21 @@ export default function useRepositoryState() {
       } else if (data.status === 'processing') {
         // Poll again after a short delay
         setTimeout(fetchRepoStructure, 3000);
+      } else if (data.status === 'error') {
+        // Handle error from backend
+        // Clear polling interval
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
+        
+        setAnalysisProgress(0);
+        setMessages([
+          {
+            role: 'assistant',
+            content: `❌ Error: ${data.message || 'Unable to analyze repository.'}`,
+          },
+        ]);
       }
     } catch (error) {
       console.error('Error fetching repository structure:', error);

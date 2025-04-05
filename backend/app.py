@@ -282,6 +282,15 @@ class CommitInfo(BaseModel):
 async def fetch_and_analyze_repo(repo_url: str, access_token: Optional[str] = None):
     """Fetch and analyze a repository."""
     try:
+        # First validate the repository URL
+        validation_result = await validate_git_repo(repo_url, access_token)
+        if not validation_result["valid"]:
+            logger.error(f"Invalid repository URL: {validation_result['reason']}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid repository URL: {validation_result['reason']}"
+            )
+        
         # Generate a unique path for the repository to prevent conflicts
         # Extract repo name from URL (handle both .git and non-.git URLs)
         url_parts = repo_url.rstrip('/').split('/')
@@ -323,6 +332,9 @@ async def fetch_and_analyze_repo(repo_url: str, access_token: Optional[str] = No
     except GitCommandError as e:
         logger.error(f"Git error during repository fetch: {e}")
         raise HTTPException(status_code=500, detail=f"Git error: {str(e)}")
+    except HTTPException:
+        # Re-raise already formatted HTTP exceptions
+        raise
     except Exception as e:
         logger.error(f"Error during repository fetch and analysis: {e}")
         raise HTTPException(status_code=500, detail=f"Error analyzing repository: {str(e)}")
@@ -340,9 +352,28 @@ async def get_repo_structure(repo_request: RepoRequest, background_tasks: Backgr
     
     # Check if repo is already cached
     if repo_url not in repo_cache:
-        # Start analysis in background if not cached
-        background_tasks.add_task(fetch_and_analyze_repo, repo_url, access_token)
-        return {"status": "processing", "message": "Repository analysis started. Try again in a few seconds."}
+        try:
+            # Validate the repository URL first
+            validation_result = await validate_git_repo(repo_url, access_token)
+            if not validation_result["valid"]:
+                return {
+                    "status": "error", 
+                    "message": f"Invalid repository: {validation_result['reason']}",
+                    "validation_result": validation_result
+                }
+            
+            # Start analysis in background if valid
+            background_tasks.add_task(fetch_and_analyze_repo, repo_url, access_token)
+            return {
+                "status": "processing", 
+                "message": "Repository analysis started. Try again in a few seconds."
+            }
+        except Exception as e:
+            logger.error(f"Error validating repository: {e}")
+            return {
+                "status": "error",
+                "message": f"Error validating repository: {str(e)}"
+            }
     
     # Return file structure
     analysis = repo_cache[repo_url]["analysis"]
@@ -1652,6 +1683,134 @@ async def search_code_element(request: Dict[str, str] = Body(...)):
                         })
     
     return results
+
+async def validate_git_repo(repo_url: str, access_token: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Validate if a URL is a valid Git repository without cloning it.
+    Returns a dictionary with validation status and details.
+    """
+    import requests
+    from git.exc import GitCommandError
+    import subprocess
+    import re
+    
+    result = {
+        "valid": False,
+        "reason": None,
+        "details": None
+    }
+    
+    # Basic URL validation
+    if not repo_url or not isinstance(repo_url, str):
+        result["reason"] = "Invalid URL format"
+        return result
+    
+    # Remove trailing slashes for consistency
+    repo_url = repo_url.rstrip('/')
+    
+    # Check if it's a GitHub URL
+    github_pattern = r'https://github\.com/([^/]+)/([^/]+)/?'
+    match = re.match(github_pattern, repo_url)
+    
+    if match:
+        # GitHub-specific validation
+        owner, repo_name = match.groups()
+        
+        # Construct API URL
+        api_url = f"https://api.github.com/repos/{owner}/{repo_name}"
+        
+        # Set up headers with auth token if provided
+        headers = {}
+        if access_token:
+            headers["Authorization"] = f"token {access_token}"
+        
+        try:
+            # Check if repo exists via GitHub API
+            response = requests.get(api_url, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                repo_data = response.json()
+                result["valid"] = True
+                result["details"] = {
+                    "name": repo_data.get("name"),
+                    "full_name": repo_data.get("full_name"),
+                    "description": repo_data.get("description"),
+                    "default_branch": repo_data.get("default_branch"),
+                    "stars": repo_data.get("stargazers_count"),
+                    "forks": repo_data.get("forks_count"),
+                    "size": repo_data.get("size")
+                }
+            elif response.status_code == 404:
+                result["reason"] = "Repository not found"
+            elif response.status_code == 403:
+                result["reason"] = "API rate limit exceeded or insufficient permissions"
+            else:
+                result["reason"] = f"GitHub API error: {response.status_code}"
+                
+            return result
+                
+        except requests.exceptions.RequestException as e:
+            result["reason"] = f"Connection error: {str(e)}"
+            return result
+    
+    # For non-GitHub URLs or as a fallback, try git ls-remote
+    try:
+        # Prepare the git command
+        git_url = repo_url
+        if access_token and git_url.startswith('https://'):
+            # Add token to URL for private repos
+            git_url = git_url.replace('https://', f'https://{access_token}@')
+        
+        # Use subprocess with a timeout to prevent hanging
+        process = subprocess.run(
+            ["git", "ls-remote", git_url, "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10  # 10 second timeout
+        )
+        
+        # Check if the command was successful
+        if process.returncode == 0:
+            result["valid"] = True
+            # Extract the HEAD commit hash
+            if process.stdout.strip():
+                commit_hash = process.stdout.split()[0]
+                result["details"] = {
+                    "head_commit": commit_hash
+                }
+        else:
+            result["reason"] = f"Git error: {process.stderr.strip()}"
+            
+    except subprocess.TimeoutExpired:
+        result["reason"] = "Timeout while validating repository"
+    except Exception as e:
+        result["reason"] = f"Error validating repository: {str(e)}"
+    
+    return result
+
+@app.post("/api/validate-repo")
+async def validate_repository(repo_request: RepoRequest):
+    """
+    Validate a repository URL before attempting to clone it.
+    """
+    repo_url = repo_request.repo_url
+    access_token = repo_request.access_token
+    
+    # Validate the repository URL
+    validation_result = await validate_git_repo(repo_url, access_token)
+    
+    if validation_result["valid"]:
+        return {
+            "status": "success",
+            "valid": True,
+            "details": validation_result["details"]
+        }
+    else:
+        return {
+            "status": "failed",
+            "valid": False,
+            "reason": validation_result["reason"]
+        }
 
 if __name__ == "__main__":
     # Run server
