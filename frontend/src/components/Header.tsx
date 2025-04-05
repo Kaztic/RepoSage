@@ -1,4 +1,4 @@
-import { FaSpinner, FaSearch, FaTrash } from 'react-icons/fa';
+import { FaSpinner, FaSearch, FaTrash, FaKey } from 'react-icons/fa';
 import { TbBrandGithub } from 'react-icons/tb';
 import ProgressBar from './ProgressBar';
 
@@ -11,6 +11,7 @@ type HeaderProps = {
   onAccessTokenChange: (value: string) => void;
   onAnalyze: () => void;
   onClearChat?: () => void;
+  onManageCredentials?: () => void;
 };
 
 export default function Header({
@@ -21,7 +22,8 @@ export default function Header({
   onRepoUrlChange,
   onAccessTokenChange,
   onAnalyze,
-  onClearChat
+  onClearChat,
+  onManageCredentials
 }: HeaderProps) {
   return (
     <header className="flex flex-col border-b border-gray-700 bg-gray-800">
@@ -48,14 +50,31 @@ export default function Header({
           <button
             onClick={onAnalyze}
             disabled={loading || !repoUrl}
-            className={`px-4 py-2 rounded font-medium ${
+            className={`px-4 py-2 rounded font-medium flex items-center ${
               loading || !repoUrl
                 ? 'bg-gray-600 cursor-not-allowed'
                 : 'bg-blue-600 hover:bg-blue-700'
             }`}
           >
-            {loading ? <FaSpinner className="animate-spin" /> : 'Analyze'}
+            {loading ? (
+              <>
+                <FaSpinner className="animate-spin mr-2" />
+                <span>Analyzing...</span>
+              </>
+            ) : (
+              'Analyze'
+            )}
           </button>
+          {onManageCredentials && (
+            <button
+              className="bg-purple-600 hover:bg-purple-700 text-white p-2 rounded flex items-center gap-2"
+              onClick={onManageCredentials}
+              disabled={loading}
+              title="Manage API Credentials"
+            >
+              <FaKey />
+            </button>
+          )}
           {onClearChat && (
             <button
               className="bg-red-600 hover:bg-red-700 text-white p-2 rounded flex items-center gap-2"

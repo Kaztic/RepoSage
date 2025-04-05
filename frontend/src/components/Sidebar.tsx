@@ -128,10 +128,11 @@ export default function Sidebar({
 
   // Render commit history
   const renderCommitHistory = () => {
-    if (loadingHistory) {
+    if (loadingHistory && commitHistory.length === 0) {
       return (
         <div className="flex justify-center items-center p-8">
           <FaSpinner className="animate-spin text-2xl" />
+          <span className="ml-2">Loading commit history...</span>
         </div>
       );
     }
@@ -154,12 +155,25 @@ export default function Sidebar({
               disabled={loadingHistory}
             >
               {loadingHistory ? (
-                <FaSpinner className="animate-spin inline mr-1" />
-              ) : null}
-              Load Complete History
+                <>
+                  <FaSpinner className="animate-spin inline mr-1" />
+                  Loading...
+                </>
+              ) : (
+                "Load Complete History"
+              )}
             </button>
           </div>
         )}
+        
+        {/* Show loading indicator at the top when loading more commits */}
+        {loadingHistory && commitHistory.length > 0 && (
+          <div className="flex items-center justify-center py-2 text-sm text-blue-400">
+            <FaSpinner className="animate-spin mr-2" />
+            <span>Loading commit history...</span>
+          </div>
+        )}
+        
         {commitHistory.map((commit) => (
           <div 
             key={commit.hash} 

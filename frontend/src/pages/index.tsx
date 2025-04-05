@@ -1,5 +1,5 @@
 import Head from 'next/head';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Layout from '../components/Layout';
 import Header from '../components/Header';
 import Sidebar from '../components/Sidebar';
@@ -7,11 +7,23 @@ import ChatInterface from '../components/ChatInterface';
 import FileViewer from '../components/FileViewer';
 import CommitViewer from '../components/CommitViewer';
 import MainLayout from '../components/MainLayout';
+import CredentialsModal from '../components/CredentialsModal';
 import useRepositoryState from '../hooks/useRepositoryState';
+import useCredentials from '../hooks/useCredentials';
 
 export default function Home() {
   // Use our custom hook to manage all repository state
   const repoState = useRepositoryState();
+  
+  // Use our custom hook for credentials
+  const credentials = useCredentials();
+  
+  // Sync access token from credentials
+  useEffect(() => {
+    if (credentials.githubToken) {
+      repoState.setAccessToken(credentials.githubToken);
+    }
+  }, [credentials.githubToken]);
   
   // Determine what content to show in the right panel
   const getRightPanelContent = () => {
@@ -45,6 +57,17 @@ export default function Home() {
         <meta name="description" content="Chat with your GitHub repositories using AI" />
       </Head>
 
+      {/* Credentials Modal */}
+      <CredentialsModal
+        isOpen={credentials.showCredentialsModal}
+        initialValues={{
+          geminiApiKey: credentials.geminiApiKey,
+          githubToken: credentials.githubToken
+        }}
+        onSave={credentials.saveCredentials}
+        onClose={credentials.closeCredentialsModal}
+      />
+
       {/* Header with repository input */}
       <Header 
         repoUrl={repoState.repoUrl}
@@ -55,6 +78,7 @@ export default function Home() {
         onAccessTokenChange={repoState.setAccessToken}
         onAnalyze={repoState.fetchRepoStructure}
         onClearChat={repoState.clearChatHistory}
+        onManageCredentials={credentials.openCredentialsModal}
       />
 
       {/* Main content with sidebar, chat, and file/commit viewer */}
@@ -93,6 +117,8 @@ export default function Home() {
             onModelChange={repoState.changeModel}
             useClaudeModel={repoState.useClaudeModel}
             onToggleModelProvider={repoState.toggleModel}
+            codeMetrics={repoState.codeMetrics}
+            onRequestCodeMetrics={repoState.requestCodeMetrics}
           />
         }
         rightPanelContent={getRightPanelContent()}

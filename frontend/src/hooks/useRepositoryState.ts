@@ -220,6 +220,12 @@ export default function useRepositoryState() {
           },
         ]);
         
+        // Automatically load commit history in the background
+        // Set a slight delay to ensure repository analysis completes first
+        setTimeout(() => {
+          fetchCommitHistory();
+        }, 500);
+        
         // Reset analysis state
         setAnalysisStartTime(null);
       } else if (data.status === 'processing') {
@@ -400,8 +406,12 @@ export default function useRepositoryState() {
   // Handle tab click for files/commits
   const handleTabClick = (tab: 'files' | 'commits') => {
     setActiveTab(tab);
-    if (tab === 'commits' && commitHistory.length === 0) {
-      fetchCommitHistory();
+    if (tab === 'commits') {
+      // If there are no commits yet, fetch them and show loading state
+      if (commitHistory.length === 0) {
+        setLoadingHistory(true);
+        fetchCommitHistory();
+      }
     }
   };
   
@@ -410,7 +420,9 @@ export default function useRepositoryState() {
     if (!repoUrl) return;
     
     try {
-      setLoading(true);
+      // Use loadingHistory instead of the main loading state
+      // This will prevent the UI from showing the main loading spinner
+      setLoadingHistory(true);
       const data = await apiService.fetchCommitHistory(repoUrl, accessToken || undefined);
 
       if (data.status === 'success') {
@@ -419,7 +431,7 @@ export default function useRepositoryState() {
     } catch (error) {
       console.error('Error fetching commit history:', error);
     } finally {
-      setLoading(false);
+      setLoadingHistory(false);
     }
   };
   

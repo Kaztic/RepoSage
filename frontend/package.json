@@ -13,6 +13,7 @@
   "dependencies": {
     "autoprefixer": "^10.4.16",
     "axios": "^1.6.0",
+    "idb": "^8.0.2",
     "next": "14.0.1",
     "postcss": "^8.4.31",
     "prismjs": "^1.29.0",
