@@ -627,6 +627,13 @@ export default function useRepositoryState() {
       setMessages((prev: ChatMessage[]) => [...prev, tempMessage]);
       
       console.log(`Looking up commit hash: ${commitHash} (attempt ${attempt})`);
+      
+      // Check if we have all the repo info necessary
+      if (!repoInfo) {
+        // First need to analyze the repository to get basic info
+        await fetchRepoStructure();
+      }
+      
       const data = await apiService.fetchCommitByHash(
         repoUrl,
         commitHash,

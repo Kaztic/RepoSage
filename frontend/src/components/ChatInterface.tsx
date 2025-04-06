@@ -23,6 +23,7 @@ type ChatInterfaceProps = {
   onToggleModelProvider?: () => void;
   codeMetrics?: CodeMetrics | null;
   onRequestCodeMetrics?: (filePath: string) => void;
+  onLookupCommit?: (commitHash: string) => void;
 };
 
 export default function ChatInterface({
@@ -39,7 +40,8 @@ export default function ChatInterface({
   useClaudeModel = false,
   onToggleModelProvider,
   codeMetrics = null,
-  onRequestCodeMetrics
+  onRequestCodeMetrics,
+  onLookupCommit
 }: ChatInterfaceProps) {
   // Local ref for chat container
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -115,6 +117,31 @@ export default function ChatInterface({
     // Shift+Enter adds a new line
     if (e.key === 'Enter' && e.shiftKey) {
       // Allow default behavior (new line)
+      return;
+    }
+    
+    // Check if it's a commit hash lookup request
+    if (e.key === 'Enter' && currentInput.trim().match(/^[0-9a-f]{7,40}$/i) && repoInfoExists) {
+      e.preventDefault();
+      
+      // The input appears to be a commit hash
+      const commitHash = currentInput.trim();
+      const tempInput = currentInput;
+      
+      // Clear the input right away to prevent double submissions
+      onInputChange('');
+      
+      // Add messages to indicate what's happening
+      const newMessage: ChatMessage = {
+        role: 'user',
+        content: `${commitHash} explain what was done in this commit`
+      };
+      
+      // Call the function to look up commit hash
+      if (onLookupCommit) {
+        onLookupCommit(commitHash);
+      }
+      
       return;
     }
     

@@ -102,10 +102,22 @@ export const fetchCommitByHash = async (
         access_token: token,
       },
       {
-        timeout: 60000, // 60 second timeout for large commits
+        timeout: 120000, // 120 second timeout for large commits
+        headers: {
+          'Content-Type': 'application/json'
+        }
       }
     );
-    return response.data;
+    
+    // Ensure we got a valid response
+    if (response.data && response.status === 200) {
+      return response.data;
+    } else {
+      return {
+        status: 'error',
+        message: 'Invalid response received from server'
+      };
+    }
   } catch (error) {
     console.error("Error fetching commit by hash:", error);
     
@@ -117,7 +129,23 @@ export const fetchCommitByHash = async (
       };
     }
     
-    // Return structured error
+    // Handle network errors
+    if (axios.isAxiosError(error) && !error.response) {
+      return {
+        status: 'error',
+        message: 'Network error. Please check your connection and try again.'
+      };
+    }
+    
+    // Handle server errors
+    if (axios.isAxiosError(error) && error.response) {
+      return {
+        status: 'error',
+        message: `Server error: ${error.response.status} - ${error.response.data?.message || 'Unknown error'}`
+      };
+    }
+    
+    // Return structured error for any other case
     return {
       status: 'error',
       message: error instanceof Error ? error.message : 'Unknown error occurred'

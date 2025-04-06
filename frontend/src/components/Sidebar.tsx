@@ -270,6 +270,12 @@ export default function Sidebar({
                       onChange={(e) => onCommitHashChange(e.target.value)}
                       placeholder="Enter commit hash"
                       className="flex-grow py-1 px-2 bg-gray-700 rounded-l border border-gray-600 text-white text-sm"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && commitHashInput.trim()) {
+                          e.preventDefault();
+                          onLookupCommit();
+                        }
+                      }}
                     />
                     <button
                       onClick={onLookupCommit}
@@ -283,6 +289,9 @@ export default function Sidebar({
                       Go
                     </button>
                   </div>
+                  <p className="text-xs text-gray-400 mt-1">
+                    You can enter a full or short hash
+                  </p>
                 </div>
                 <h3 className="font-medium px-2 py-1 text-gray-300 text-sm">Commit History</h3>
                 {renderCommitHistory()}

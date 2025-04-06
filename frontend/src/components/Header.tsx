@@ -1,4 +1,4 @@
-import { FaSpinner, FaSearch, FaTrash, FaKey } from 'react-icons/fa';
+import { FaSpinner, FaSearch, FaTrash, FaKey, FaCodeBranch } from 'react-icons/fa';
 import { TbBrandGithub } from 'react-icons/tb';
 import ProgressBar from './ProgressBar';
 
@@ -12,6 +12,7 @@ type HeaderProps = {
   onAnalyze: () => void;
   onClearChat?: () => void;
   onManageCredentials?: () => void;
+  onOpenCommitSearch?: () => void;
 };
 
 export default function Header({
@@ -23,7 +24,8 @@ export default function Header({
   onAccessTokenChange,
   onAnalyze,
   onClearChat,
-  onManageCredentials
+  onManageCredentials,
+  onOpenCommitSearch
 }: HeaderProps) {
   return (
     <header className="flex flex-col border-b border-gray-700 bg-gray-800">
@@ -65,6 +67,16 @@ export default function Header({
               'Analyze'
             )}
           </button>
+          {onOpenCommitSearch && (
+            <button
+              className="bg-green-600 hover:bg-green-700 text-white p-2 rounded flex items-center gap-2"
+              onClick={onOpenCommitSearch}
+              disabled={loading}
+              title="Find Commit"
+            >
+              <FaCodeBranch />
+            </button>
+          )}
           {onManageCredentials && (
             <button
               className="bg-purple-600 hover:bg-purple-700 text-white p-2 rounded flex items-center gap-2"

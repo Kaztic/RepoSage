@@ -8,6 +8,7 @@ import FileViewer from '../components/FileViewer';
 import CommitViewer from '../components/CommitViewer';
 import MainLayout from '../components/MainLayout';
 import CredentialsModal from '../components/CredentialsModal';
+import InfoModal from '../components/InfoModal';
 import useRepositoryState from '../hooks/useRepositoryState';
 import useCredentials from '../hooks/useCredentials';
 
@@ -18,12 +19,38 @@ export default function Home() {
   // Use our custom hook for credentials
   const credentials = useCredentials();
   
+  // State for info modal
+  const [infoModal, setInfoModal] = useState({ 
+    isOpen: false, 
+    title: '',
+    message: ''
+  });
+  
   // Sync access token from credentials
   useEffect(() => {
     if (credentials.githubToken) {
       repoState.setAccessToken(credentials.githubToken);
     }
   }, [credentials.githubToken]);
+  
+  // Handle opening commit search tab
+  const handleOpenCommitSearch = () => {
+    if (repoState.repoInfo) {
+      repoState.handleTabClick('commits');
+    } else {
+      // Show info modal if repo isn't loaded
+      setInfoModal({
+        isOpen: true,
+        title: 'Repository Not Loaded',
+        message: 'Please enter a GitHub repository URL and click "Analyze" first to search for commits.'
+      });
+    }
+  };
+  
+  // Close info modal
+  const closeInfoModal = () => {
+    setInfoModal({ ...infoModal, isOpen: false });
+  };
   
   // Determine what content to show in the right panel
   const getRightPanelContent = () => {
@@ -67,6 +94,14 @@ export default function Home() {
         onSave={credentials.saveCredentials}
         onClose={credentials.closeCredentialsModal}
       />
+      
+      {/* Info Modal */}
+      <InfoModal 
+        isOpen={infoModal.isOpen}
+        title={infoModal.title}
+        message={infoModal.message}
+        onClose={closeInfoModal}
+      />
 
       {/* Header with repository input */}
       <Header 
@@ -79,6 +114,7 @@ export default function Home() {
         onAnalyze={repoState.fetchRepoStructure}
         onClearChat={repoState.clearChatHistory}
         onManageCredentials={credentials.openCredentialsModal}
+        onOpenCommitSearch={handleOpenCommitSearch}
       />
 
       {/* Main content with sidebar, chat, and file/commit viewer */}
@@ -119,6 +155,7 @@ export default function Home() {
             onToggleModelProvider={repoState.toggleModel}
             codeMetrics={repoState.codeMetrics}
             onRequestCodeMetrics={repoState.requestCodeMetrics}
+            onLookupCommit={repoState.lookupCommitByHash}
           />
         }
         rightPanelContent={getRightPanelContent()}
