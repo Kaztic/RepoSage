@@ -17,6 +17,7 @@ RepoSage Enterprise is an advanced AI assistant that leverages Claude Sonnet 3.7
   - **Vector-Based Search**: Hybrid model combining BM25 + sentence transformer embeddings
   - **Contextual Query Understanding**: Intelligent expansion of user queries
   - **Multi-Modal Search Support**: Code-snippet and commit-message based searches
+  - **Weaviate Integration**: Advanced vector database for improved semantic code search
 
 - **Enterprise-Grade Architecture**
   - **High Performance Backend**: FastAPI with async task queues (Celery/Redis)
@@ -69,19 +70,47 @@ RepoSage Enterprise is built with a modern, scalable architecture:
 - Gemini Pro API key
 - Docker and Docker Compose
 
+### Environment Variables
+
+Create a `.env` file at the root of the project with the following variables:
+
+```
+GEMINI_API_KEY=your_gemini_pro_api_key
+ANTHROPIC_API_KEY=your_claude_api_key
+GITHUB_TOKEN=your_github_token
+ENCRYPTION_KEY=random_32_character_string
+SECRET_KEY=another_random_string
+WEAVIATE_URL=http://weaviate:8080
+```
+
 ### Local Development
 
 1. Clone this repository
-2. Set up environment variables:
-   ```
-   cp backend/.env.template backend/.env
-   ```
-   Then edit the `.env` file with your API keys and configuration
-3. Start the development environment:
+2. Set up environment variables in `.env` file
+3. Build and run with Docker Compose:
    ```
    docker-compose up -d
    ```
-4. Visit `http://localhost:3000` in your browser
+
+### Using Weaviate for Semantic Search
+
+RepoSage Enterprise can use Weaviate as a vector database for semantic search, which provides several advantages over the default sentence transformer approach:
+
+1. **Better Scalability**: Handles larger codebases with millions of lines of code
+2. **Faster Search**: Production-ready vector search optimized for performance
+3. **Persistent Storage**: Embeddings persisted between application restarts
+
+Weaviate is enabled by default in the Docker Compose configuration. The system will automatically:
+
+1. Create a Weaviate schema for repository files
+2. Store file contents and generate embeddings using the text2vec-transformers module
+3. Perform semantic search through Weaviate's query interface
+
+You can configure the Weaviate connection with these environment variables:
+- `WEAVIATE_URL`: Weaviate server URL (default: http://weaviate:8080 in Docker)
+- `WEAVIATE_API_KEY`: Optional authentication key if your Weaviate instance requires it
+
+For more advanced configurations, check the Weaviate documentation.
 
 ### Enterprise Deployment
 

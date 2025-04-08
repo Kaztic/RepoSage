@@ -19,6 +19,8 @@ from github import Github
 from git import Repo
 import numpy as np
 from sentence_transformers import SentenceTransformer
+import weaviate
+from weaviate.util import generate_uuid5
 
 # Configure logging
 logging.basicConfig(
@@ -27,14 +29,134 @@ logging.basicConfig(
 )
 logger = logging.getLogger('reposage')
 
-# Global model instance to be shared across analyzer instances
+# Global weaviate client instance to be shared across analyzer instances
+_global_weaviate_client = None
 _global_sentence_transformer = None
 
+def get_global_weaviate_client():
+    global _global_weaviate_client
+    if _global_weaviate_client is None:
+        logger.info("Initializing global Weaviate client")
+        
+        # Try connecting to Weaviate
+        try:
+            # Check for environment variables or use default local connection
+            weaviate_url = os.environ.get("WEAVIATE_URL", "http://localhost:8080")
+            weaviate_api_key = os.environ.get("WEAVIATE_API_KEY", None)
+            
+            auth_config = weaviate.auth.AuthApiKey(api_key=weaviate_api_key) if weaviate_api_key else None
+            
+            _global_weaviate_client = weaviate.Client(
+                url=weaviate_url,
+                auth_client_secret=auth_config,
+                timeout_config=(5, 15)  # (connect_timeout, read_timeout)
+            )
+            
+            # Define schema for repository files if it doesn't exist
+            if not _global_weaviate_client.schema.contains_class("RepositoryFile"):
+                class_obj = {
+                    "class": "RepositoryFile",
+                    "description": "Repository file with content embeddings",
+                    "vectorizer": "text2vec-transformers",  # Using Weaviate's transformers module
+                    "properties": [
+                        {
+                            "name": "path",
+                            "dataType": ["string"],
+                            "description": "File path within repository"
+                        },
+                        {
+                            "name": "content",
+                            "dataType": ["text"],
+                            "description": "File content"
+                        },
+                        {
+                            "name": "repository",
+                            "dataType": ["string"],
+                            "description": "Repository identifier"
+                        }
+                    ]
+                }
+                _global_weaviate_client.schema.create_class(class_obj)
+                logger.info("Created Weaviate schema for RepositoryFile")
+            
+            logger.info("Successfully connected to Weaviate")
+            
+        except Exception as e:
+            logger.error(f"Error connecting to Weaviate: {e}")
+            # Fall back to sentence transformer
+            _global_weaviate_client = None
+            
+    return _global_weaviate_client
+
 def get_global_sentence_transformer():
+    """Fallback to sentence transformer if Weaviate is not available"""
     global _global_sentence_transformer
+    
+    # Try to use Weaviate first
+    weaviate_client = get_global_weaviate_client()
+    if weaviate_client is not None:
+        return weaviate_client
+        
+    # Fall back to sentence transformer
     if _global_sentence_transformer is None:
-        logger.info("Initializing global sentence transformer model")
-        _global_sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2')
+        logger.info("Initializing global sentence transformer model as fallback")
+        
+        # Create a persistent cache directory in the project
+        cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model_cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        logger.info(f"Using cache directory: {cache_dir}")
+        
+        try:
+            # Try loading with longer timeout and persistent cache
+            import requests
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
+            
+            # Configure longer timeout and retries for requests
+            old_request = requests.request
+            
+            def patched_request(*args, **kwargs):
+                kwargs.setdefault('timeout', 30)  # 30 second timeout
+                return old_request(*args, **kwargs)
+            
+            # Patch the request function to use longer timeout
+            requests.request = patched_request
+            
+            # Configure session with retries
+            session = requests.Session()
+            retry = Retry(connect=5, backoff_factor=0.5)
+            adapter = HTTPAdapter(max_retries=retry)
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            
+            # Attempt to load the model with our custom session and cache
+            _global_sentence_transformer = SentenceTransformer(
+                'all-MiniLM-L6-v2',
+                cache_folder=cache_dir
+            )
+            logger.info("Successfully loaded sentence transformer model")
+            
+        except Exception as e:
+            logger.error(f"Error loading sentence transformer model: {e}")
+            
+            # Fallback to a dummy embedder if model can't be loaded
+            logger.warning("Using fallback dummy sentence transformer")
+            
+            class DummySentenceTransformer:
+                def encode(self, texts, **kwargs):
+                    # Return random embeddings of the right dimension as a fallback
+                    if isinstance(texts, str):
+                        return np.random.rand(384)  # Common embedding size
+                    else:
+                        return np.random.rand(len(texts), 384)
+            
+            _global_sentence_transformer = DummySentenceTransformer()
+            
+        finally:
+            # Restore original request function
+            if 'requests' in locals() and 'old_request' in locals():
+                requests.request = old_request
+            
     return _global_sentence_transformer
 
 class RepoAnalyzer:
@@ -42,10 +164,24 @@ class RepoAnalyzer:
     
     def __init__(self, repo_path: str):
         self.repo = Repo(repo_path)
+        self.repo_id = os.path.basename(self.repo.working_dir)
         self.model = get_global_sentence_transformer()  # Use shared model instance
         self.file_contents = {}
         self.file_embeddings = {}
         self.commit_history = []
+        self.is_weaviate = isinstance(self.model, weaviate.Client)
+        
+        # Clean up any existing repository data if using Weaviate
+        if self.is_weaviate:
+            try:
+                self.model.batch.delete_objects(
+                    class_name="RepositoryFile",
+                    where={
+                        "path": ["repository == \"{}\"".format(self.repo_id)]
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Error cleaning up existing repository data: {e}")
         
     def analyze_repo(self) -> Dict[str, Any]:
         """Perform comprehensive repository analysis."""
@@ -537,26 +673,159 @@ class RepoAnalyzer:
             '.o', '.a', '.lib',  # C/C++ compiled
         }
         
-        for root, dirs, files in os.walk(repo_dir):
-            # Skip .git and other hidden directories
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
-            
-            # Make path relative to the repo root
-            rel_path = os.path.relpath(root, repo_dir)
-            
-            # Skip current directory for cleaner structure
-            if rel_path == '.':
-                # Add files directly to root level
+        # Create a batch processor if using Weaviate
+        batch_size = 50
+        current_batch = 0
+        
+        if self.is_weaviate:
+            with self.model.batch as batch:
+                batch.batch_size = batch_size
+
+                for root, dirs, files in os.walk(repo_dir):
+                    # Skip .git and other hidden directories
+                    dirs[:] = [d for d in dirs if not d.startswith('.')]
+                    
+                    # Make path relative to the repo root
+                    rel_path = os.path.relpath(root, repo_dir)
+                    
+                    # Skip current directory for cleaner structure
+                    if rel_path == '.':
+                        # Add files directly to root level
+                        for file in files:
+                            if not file.startswith('.'):
+                                file_path = file  # Just the filename for root level files
+                                full_path = os.path.join(root, file)
+                                
+                                # Skip binary files based on extension
+                                _, ext = os.path.splitext(file)
+                                if ext.lower() in binary_extensions:
+                                    self.file_contents[file_path] = "[Binary content]"
+                                    file_structure[file] = None
+                                    continue
+                                
+                                if os.path.isfile(full_path):
+                                    try:
+                                        with open(full_path, 'r', encoding='utf-8') as f:
+                                            content = f.read()
+                                            self.file_contents[file_path] = content
+                                            
+                                            # Store in Weaviate
+                                            uuid = generate_uuid5(f"{self.repo_id}_{file_path}")
+                                            properties = {
+                                                "path": file_path,
+                                                "content": content[:8000] if len(content) > 8000 else content,  # Weaviate has text limits
+                                                "repository": self.repo_id
+                                            }
+                                            batch.add_data_object(properties, "RepositoryFile", uuid)
+                                            
+                                    except (UnicodeDecodeError, IsADirectoryError, PermissionError, OSError):
+                                        # Skip binary files or those we can't read
+                                        self.file_contents[file_path] = "[Binary content]"
+                                    
+                                    # Store file name in root structure
+                                    file_structure[file] = None
+                        continue
+                    
+                    # Navigate to the correct position in the structure
+                    path_parts = rel_path.split(os.sep)
+                    current_level = file_structure
+                    for part in path_parts:
+                        if part not in current_level:
+                            current_level[part] = {}
+                        current_level = current_level[part]
+                    
+                    # Add files at this level
+                    for file in files:
+                        if not file.startswith('.'):
+                            file_path = os.path.join(rel_path, file)  # Path relative to repo root
+                            full_path = os.path.join(root, file)
+                            
+                            # Skip binary files based on extension
+                            _, ext = os.path.splitext(file)
+                            if ext.lower() in binary_extensions:
+                                self.file_contents[file_path] = "[Binary content]"
+                                current_level[file] = None
+                                continue
+                            
+                            if os.path.isfile(full_path):
+                                try:
+                                    with open(full_path, 'r', encoding='utf-8') as f:
+                                        content = f.read()
+                                        self.file_contents[file_path] = content
+                                        
+                                        # Store in Weaviate
+                                        uuid = generate_uuid5(f"{self.repo_id}_{file_path}")
+                                        properties = {
+                                            "path": file_path,
+                                            "content": content[:8000] if len(content) > 8000 else content,  # Weaviate has text limits
+                                            "repository": self.repo_id
+                                        }
+                                        batch.add_data_object(properties, "RepositoryFile", uuid)
+                                        
+                                except (UnicodeDecodeError, IsADirectoryError, PermissionError, OSError):
+                                    # Skip binary files or those we can't read
+                                    self.file_contents[file_path] = "[Binary content]"
+                                
+                                # Store file name in structure
+                                current_level[file] = None
+        else:
+            # Original implementation without Weaviate
+            for root, dirs, files in os.walk(repo_dir):
+                # Skip .git and other hidden directories
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+                
+                # Make path relative to the repo root
+                rel_path = os.path.relpath(root, repo_dir)
+                
+                # Skip current directory for cleaner structure
+                if rel_path == '.':
+                    # Add files directly to root level
+                    for file in files:
+                        if not file.startswith('.'):
+                            file_path = file  # Just the filename for root level files
+                            full_path = os.path.join(root, file)
+                            
+                            # Skip binary files based on extension
+                            _, ext = os.path.splitext(file)
+                            if ext.lower() in binary_extensions:
+                                self.file_contents[file_path] = "[Binary content]"
+                                file_structure[file] = None
+                                continue
+                            
+                            if os.path.isfile(full_path):
+                                try:
+                                    with open(full_path, 'r', encoding='utf-8') as f:
+                                        content = f.read()
+                                        self.file_contents[file_path] = content
+                                        # Generate embedding for file content
+                                        self.file_embeddings[file_path] = self.model.encode(content[:5000])  # Limit content size
+                                except (UnicodeDecodeError, IsADirectoryError, PermissionError, OSError):
+                                    # Skip binary files or those we can't read
+                                    self.file_contents[file_path] = "[Binary content]"
+                                
+                                # Store file name in root structure
+                                file_structure[file] = None
+                    continue
+                
+                # Navigate to the correct position in the structure
+                path_parts = rel_path.split(os.sep)
+                current_level = file_structure
+                for part in path_parts:
+                    if part not in current_level:
+                        current_level[part] = {}
+                    current_level = current_level[part]
+                
+                # Add files at this level
                 for file in files:
                     if not file.startswith('.'):
-                        file_path = file  # Just the filename for root level files
+                        file_path = os.path.join(rel_path, file)  # Path relative to repo root
                         full_path = os.path.join(root, file)
                         
                         # Skip binary files based on extension
                         _, ext = os.path.splitext(file)
                         if ext.lower() in binary_extensions:
                             self.file_contents[file_path] = "[Binary content]"
-                            file_structure[file] = None
+                            current_level[file] = None
                             continue
                         
                         if os.path.isfile(full_path):
@@ -570,44 +839,8 @@ class RepoAnalyzer:
                                 # Skip binary files or those we can't read
                                 self.file_contents[file_path] = "[Binary content]"
                             
-                            # Store file name in root structure
-                            file_structure[file] = None
-                continue
-            
-            # Navigate to the correct position in the structure
-            path_parts = rel_path.split(os.sep)
-            current_level = file_structure
-            for part in path_parts:
-                if part not in current_level:
-                    current_level[part] = {}
-                current_level = current_level[part]
-            
-            # Add files at this level
-            for file in files:
-                if not file.startswith('.'):
-                    file_path = os.path.join(rel_path, file)  # Path relative to repo root
-                    full_path = os.path.join(root, file)
-                    
-                    # Skip binary files based on extension
-                    _, ext = os.path.splitext(file)
-                    if ext.lower() in binary_extensions:
-                        self.file_contents[file_path] = "[Binary content]"
-                        current_level[file] = None
-                        continue
-                    
-                    if os.path.isfile(full_path):
-                        try:
-                            with open(full_path, 'r', encoding='utf-8') as f:
-                                content = f.read()
-                                self.file_contents[file_path] = content
-                                # Generate embedding for file content
-                                self.file_embeddings[file_path] = self.model.encode(content[:5000])  # Limit content size
-                        except (UnicodeDecodeError, IsADirectoryError, PermissionError, OSError):
-                            # Skip binary files or those we can't read
-                            self.file_contents[file_path] = "[Binary content]"
-                        
-                        # Store file name in structure
-                        current_level[file] = None
+                            # Store file name in structure
+                            current_level[file] = None
         
         return file_structure
     
@@ -642,55 +875,119 @@ class RepoAnalyzer:
     
     def search_relevant_files(self, query: str, top_k: int = 5) -> List[Tuple[str, str]]:
         """Search for files relevant to a query using embeddings."""
-        if not self.file_embeddings:
-            logger.warning("No file embeddings available for search")
-            return []
+        if self.is_weaviate:
+            try:
+                # Use Weaviate's semantic search
+                result = (
+                    self.model.query
+                    .get("RepositoryFile", ["path", "content"])
+                    .with_where({
+                        "path": ["repository == \"{}\"".format(self.repo_id)]
+                    })
+                    .with_near_text({"concepts": [query]})
+                    .with_limit(top_k)
+                    .do()
+                )
+                
+                # Process results
+                if "data" in result and "Get" in result["data"] and "RepositoryFile" in result["data"]["Get"]:
+                    files = result["data"]["Get"]["RepositoryFile"]
+                    return [(file["path"], file["content"]) for file in files]
+                else:
+                    logger.warning("No files found in Weaviate search")
+                    return []
+            except Exception as e:
+                logger.error(f"Error searching with Weaviate: {e}")
+                # Fall back to the original method if Weaviate fails
+                if not self.file_embeddings:
+                    return []
+        else:
+            # Original sentence transformer implementation
+            if not self.file_embeddings:
+                logger.warning("No file embeddings available for search")
+                return []
+            
+            query_embedding = self.model.encode(query)
+            
+            # Calculate similarities
+            similarities = {}
+            for file_path, embedding in self.file_embeddings.items():
+                similarity = np.dot(query_embedding, embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(embedding)
+                )
+                similarities[file_path] = similarity
+            
+            # Sort by similarity
+            sorted_files = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
+            
+            # Return top_k files with their content
+            return [(file_path, self.file_contents[file_path]) 
+                    for file_path, _ in sorted_files[:top_k]]
         
-        query_embedding = self.model.encode(query)
-        
-        # Calculate similarities
-        similarities = {}
-        for file_path, embedding in self.file_embeddings.items():
-            similarity = np.dot(query_embedding, embedding) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(embedding)
-            )
-            similarities[file_path] = similarity
-        
-        # Sort by similarity
-        sorted_files = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
-        
-        # Return top_k files with their content
-        return [(file_path, self.file_contents[file_path]) 
-                for file_path, _ in sorted_files[:top_k]]
-    
     def search_commit_history(self, query: str) -> List[Dict[str, str]]:
         """Search commit history for relevant commits."""
         if not self.commit_history:
             logger.warning("No commit history available for search")
             return []
         
-        # Convert query to embedding
-        query_embedding = self.model.encode(query)
-        
-        # Generate embeddings for commit messages
-        commit_embeddings = {}
-        for commit in self.commit_history:
-            commit_embeddings[commit["hash"]] = self.model.encode(commit["message"])
-        
-        # Calculate similarities
-        similarities = {}
-        for commit_hash, embedding in commit_embeddings.items():
-            similarity = np.dot(query_embedding, embedding) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(embedding)
-            )
-            similarities[commit_hash] = similarity
-        
-        # Sort by similarity and return top 5
-        sorted_commits = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:5]
-        
-        # Return commit information
-        return [commit for commit in self.commit_history 
-                if commit["hash"] in [hash for hash, _ in sorted_commits]]
+        if self.is_weaviate:
+            # For commit history, we'll still use the sentence transformer approach
+            # We could store commits in Weaviate too, but that would be a separate collection
+            # Loading the model for a one-off usage
+            try:
+                from sentence_transformers import SentenceTransformer
+                model = SentenceTransformer('all-MiniLM-L6-v2')
+                
+                # Get query embedding
+                query_embedding = model.encode(query)
+                
+                # Generate embeddings for commit messages
+                commit_embeddings = {}
+                for commit in self.commit_history:
+                    commit_embeddings[commit["hash"]] = model.encode(commit["message"])
+                
+                # Calculate similarities
+                similarities = {}
+                for commit_hash, embedding in commit_embeddings.items():
+                    similarity = np.dot(query_embedding, embedding) / (
+                        np.linalg.norm(query_embedding) * np.linalg.norm(embedding)
+                    )
+                    similarities[commit_hash] = similarity
+                
+                # Sort by similarity and return top 5
+                sorted_commits = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:5]
+                
+                # Return commit information
+                return [commit for commit in self.commit_history 
+                        if commit["hash"] in [hash for hash, _ in sorted_commits]]
+            except Exception as e:
+                logger.error(f"Error searching commits with sentence transformers: {e}")
+                # Return all commits as fallback, limited to 5
+                return self.commit_history[:5]
+        else:
+            # Original implementation
+            # Convert query to embedding
+            query_embedding = self.model.encode(query)
+            
+            # Generate embeddings for commit messages
+            commit_embeddings = {}
+            for commit in self.commit_history:
+                commit_embeddings[commit["hash"]] = self.model.encode(commit["message"])
+            
+            # Calculate similarities
+            similarities = {}
+            for commit_hash, embedding in commit_embeddings.items():
+                similarity = np.dot(query_embedding, embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(embedding)
+                )
+                similarities[commit_hash] = similarity
+            
+            # Sort by similarity and return top 5
+            sorted_commits = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:5]
+            
+            # Return commit information
+            return [commit for commit in self.commit_history 
+                    if commit["hash"] in [hash for hash, _ in sorted_commits]]
 
 
 class GeminiClient:

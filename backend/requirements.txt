@@ -6,6 +6,7 @@ pyyaml==6.0.1
 langchain==0.0.267
 langchain-anthropic==0.1.4
 sentence-transformers==2.2.2
+weaviate-client==4.5.0
 pygithub==1.59.1
 gitpython==3.1.37
 fastapi==0.103.1
@@ -15,7 +16,7 @@ numpy==1.25.2
 pandas==2.1.0
 aiohttp==3.8.5
 websockets==11.0.3
-pydantic==2.4.2
+pydantic>=2.5.0,<3.0.0
 python-multipart==0.0.6
 huggingface-hub==0.16.4
 celery==5.3.6

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend:
     build:
@@ -17,11 +15,16 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - SECRET_KEY=${SECRET_KEY}
+      - WEAVIATE_URL=http://weaviate:8080
     volumes:
       - /tmp:/tmp  # Share the tmp directory for git repositories
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      weaviate:
+        condition: service_started
     restart: always
 
   celery_worker:
@@ -37,12 +40,18 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - SECRET_KEY=${SECRET_KEY}
+      - WEAVIATE_URL=http://weaviate:8080
     volumes:
       - /tmp:/tmp  # Share the tmp directory for git repositories
     depends_on:
-      - redis
-      - postgres
-      - backend
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      backend:
+        condition: service_started
+      weaviate:
+        condition: service_started
     restart: always
 
   frontend:
@@ -54,7 +63,8 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_started
     restart: always
 
   redis:
@@ -67,17 +77,41 @@ services:
     command: redis-server --save 60 1 --loglevel warning
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:15-alpine
     ports:
       - "5432:5432"
     environment:
-      - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
       - POSTGRES_DB=reposage
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: always
 
+  weaviate:
+    image: semitechnologies/weaviate:1.24.5
+    ports:
+      - "8080:8080"
+    environment:
+      - QUERY_DEFAULTS_LIMIT=20
+      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+      - DEFAULT_VECTORIZER_MODULE=text2vec-transformers
+      - ENABLE_MODULES=text2vec-transformers
+      - TRANSFORMERS_INFERENCE_API=http://t2v-transformers:8080
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    depends_on:
+      t2v-transformers:
+        condition: service_started
+    restart: always
+
+  t2v-transformers:
+    image: semitechnologies/transformers-inference:sentence-transformers-all-MiniLM-L6-v2
+    environment:
+      - ENABLE_CUDA=0
+    restart: always
+
 volumes:
   redis_data:
-  postgres_data: 
+  postgres_data:
+  weaviate_data: 
