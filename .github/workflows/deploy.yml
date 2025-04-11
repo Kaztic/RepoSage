@@ -3,7 +3,9 @@ name: Deploy Application
 on:
   push:
     branches:
-      - main
+      - develop
+      - 'feature/aws-deployment-with-CI/CD'
+  workflow_dispatch:
 
 # Permission for GitHub Container Registry
 permissions:
