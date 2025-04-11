@@ -37,7 +37,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.test
+          file: ./docker/Dockerfile.backend
           push: true
           tags: ghcr.io/${{ env.OWNER }}/reposage-backend:latest
 
@@ -45,7 +45,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.test
+          file: ./docker/Dockerfile.frontend
           push: true
           tags: ghcr.io/${{ env.OWNER }}/reposage-frontend:latest
 
