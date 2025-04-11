@@ -2,8 +2,9 @@
 
 # Script to pull latest Docker images and restart containers on EC2 instance
 
-# Set GitHub username (use the same as in GitHub Actions)
+# Set GitHub username (use the same as in GitHub Actions) and ensure it's lowercase
 GITHUB_USERNAME=${GITHUB_USERNAME:-$(whoami)}
+GITHUB_USERNAME=$(echo "$GITHUB_USERNAME" | tr '[:upper:]' '[:lower:]')
 
 # Login to GitHub Container Registry - using password-stdin method
 echo "Logging in to GitHub Container Registry..."

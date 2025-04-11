@@ -3,8 +3,7 @@ name: Deploy Application
 on:
   push:
     branches:
-      - develop
-      - 'feature/aws-deployment-with-CI/CD'
+      - feature/aws-deployment-with-CI/CD
   workflow_dispatch:
 
 # Permission for GitHub Container Registry
@@ -19,6 +18,10 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
+
+      - name: Set lowercase owner name
+        id: lowercase
+        run: echo "OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v2
@@ -36,7 +39,7 @@ jobs:
           context: .
           file: ./Dockerfile.test
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/reposage-backend:latest
+          tags: ghcr.io/${{ env.OWNER }}/reposage-backend:latest
 
       - name: Build and Push Frontend Image
         uses: docker/build-push-action@v4
@@ -44,7 +47,7 @@ jobs:
           context: .
           file: ./Dockerfile.test
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/reposage-frontend:latest
+          tags: ghcr.io/${{ env.OWNER }}/reposage-frontend:latest
 
       - name: Deploy to EC2 instance via SSH
         uses: appleboy/ssh-action@master
@@ -53,6 +56,6 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
           script: |
-            export GITHUB_USERNAME=${{ github.repository_owner }}
+            export GITHUB_USERNAME=${{ env.OWNER }}
             export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
             bash ~/pull.sh 
