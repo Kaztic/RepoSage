@@ -1,0 +1,4 @@
+find the info of my ec2 instance here
+
+1. user - ec2-user
+2. public ip - 13.61.100.168

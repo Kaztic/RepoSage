@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# Source environment variables from .env file
+if [ -f ~/.env ]; then
+  source ~/.env
+  echo "Loaded environment variables from .env file"
+else
+  echo "Warning: .env file not found"
+fi
+
 # Script to pull latest Docker images and restart containers on EC2 instance
 
 # Check disk space before starting
@@ -72,7 +80,7 @@ services:
       - GITHUB_TOKEN=\${GITHUB_TOKEN:-}
       - ANTHROPIC_API_KEY=\${ANTHROPIC_API_KEY:-}
       - PORT=8000
-      - ALLOWED_ORIGINS=http://13.51.195.210:3000
+      - ALLOWED_ORIGINS=http://13.61.100.168:3000
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/reposage
       - REDIS_URL=redis://redis:6379/0
       - ENCRYPTION_KEY=\${ENCRYPTION_KEY:-default_encryption_key}
@@ -104,7 +112,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://13.51.195.210:8000
+      - NEXT_PUBLIC_API_URL=http://13.61.100.168:8000
     depends_on:
       - backend
     restart: always
@@ -141,10 +149,10 @@ if [ ! -f .env ]; then
   cat > .env << EOF
 GITHUB_USERNAME=$GITHUB_USERNAME
 GITHUB_TOKEN=$GITHUB_TOKEN
-GEMINI_API_KEY=
-ANTHROPIC_API_KEY=
-ENCRYPTION_KEY=default_encryption_key
-SECRET_KEY=default_secret_key
+GEMINI_API_KEY=$GEMINI_API_KEY
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+ENCRYPTION_KEY=$ENCRYPTION_KEY
+SECRET_KEY=$SECRET_KEY
 EOF
 fi
 
@@ -170,5 +178,5 @@ df -h /
 
 echo "Deployment completed successfully!"
 echo "Application should be accessible at:"
-echo "Frontend: http://13.51.195.210:3000"
-echo "Backend: http://13.51.195.210:8000" 
+echo "Frontend: http://13.61.100.168:3000"
+echo "Backend: http://13.61.100.168:8000" 
