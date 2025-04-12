@@ -11,6 +11,9 @@ RUN apt-get update && \
 # Copy requirements first for better caching
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Explicitly install celery and ensure it's in PATH
+RUN pip install --no-cache-dir celery==5.3.6 && \
+    celery --version
 
 # Copy backend code
 COPY backend/ .
