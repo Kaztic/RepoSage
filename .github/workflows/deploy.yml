@@ -33,21 +33,40 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
+      # Add cache for more efficient builds
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
       - name: Build and Push Backend Image
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./docker/Dockerfile.backend
+          file: ./Dockerfile.test
           push: true
           tags: ghcr.io/${{ env.OWNER }}/reposage-backend:latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
       - name: Build and Push Frontend Image
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./docker/Dockerfile.frontend
+          file: ./Dockerfile.test
           push: true
           tags: ghcr.io/${{ env.OWNER }}/reposage-frontend:latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      # Move cache to prevent size from growing indefinitely
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
       - name: Deploy to EC2 instance via SSH
         uses: appleboy/ssh-action@master
@@ -58,4 +77,35 @@ jobs:
           script: |
             export GITHUB_USERNAME=${{ env.OWNER }}
             export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+            
+            # Check if disk space is critically low
+            DISK_SPACE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+            if [ "$DISK_SPACE" -gt 90 ]; then
+              echo "CRITICAL: Disk space at $DISK_SPACE%, performing emergency cleanup"
+              sudo docker system prune -af --volumes
+            fi
+            
+            # Enhanced cleanup before deployment
+            echo "Performing thorough image cleanup before deployment..."
+            # Stop and remove running containers
+            sudo docker-compose -f ~/docker-compose.deploy.yml down 2>/dev/null || true
+            
+            # Remove all images related to the application
+            BACKEND_IMAGES=$(sudo docker images "ghcr.io/${GITHUB_USERNAME}/reposage-backend" -q)
+            FRONTEND_IMAGES=$(sudo docker images "ghcr.io/${GITHUB_USERNAME}/reposage-frontend" -q)
+            
+            if [ ! -z "$BACKEND_IMAGES" ]; then
+              echo "Removing old backend images: $BACKEND_IMAGES"
+              echo "$BACKEND_IMAGES" | xargs -r sudo docker rmi -f
+            fi
+            
+            if [ ! -z "$FRONTEND_IMAGES" ]; then
+              echo "Removing old frontend images: $FRONTEND_IMAGES"
+              echo "$FRONTEND_IMAGES" | xargs -r sudo docker rmi -f
+            fi
+            
+            # Clean up any dangling images
+            sudo docker image prune -f
+            
+            # Run deployment script
             bash ~/pull.sh 
