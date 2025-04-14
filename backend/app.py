@@ -25,6 +25,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
 from dotenv import load_dotenv
+from mangum import Mangum
 
 # Database and caching imports
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Boolean, Float, JSON
@@ -234,9 +235,10 @@ app = FastAPI(
 )
 
 # Add CORS middleware
+frontend_url = os.getenv("FRONTEND_URL", "https://reposage.vercel.app")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure more specifically in production
+    allow_origins=[frontend_url],  # Use environment variable for Vercel frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1862,4 +1864,7 @@ async def validate_repository(repo_request: RepoRequest):
 if __name__ == "__main__":
     # Run server
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True) 
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)
+
+# AWS Lambda handler
+handler = Mangum(app) 

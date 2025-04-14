@@ -1,0 +1,42 @@
+service: reposage-backend
+
+provider:
+  name: aws
+  runtime: python3.9
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  environment:
+    GEMINI_API_KEY: ${env:GEMINI_API_KEY}
+    ANTHROPIC_API_KEY: ${env:ANTHROPIC_API_KEY}
+    GITHUB_TOKEN: ${env:GITHUB_TOKEN}
+    ENCRYPTION_KEY: ${env:ENCRYPTION_KEY}
+    SECRET_KEY: ${env:SECRET_KEY}
+    FRONTEND_URL: ${env:FRONTEND_URL, 'https://reposage.vercel.app'}
+    DATABASE_URL: ${env:DATABASE_URL, 'sqlite:///tmp/reposage.db'}
+    REDIS_URL: ${env:REDIS_URL, 'redis://localhost:6379/0'}
+
+functions:
+  app:
+    handler: app.handler
+    events:
+      - http:
+          path: /{proxy+}
+          method: any
+          cors: true
+    timeout: 30
+    memorySize: 1024
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    dockerizePip: true
+    zip: true
+    slim: true
+    layer: false
+    slimPatterns:
+      - '**/*.egg-info'
+      - '**/*.dist-info'
+      - '**/*.pyc'
+      - '**/__pycache__' 

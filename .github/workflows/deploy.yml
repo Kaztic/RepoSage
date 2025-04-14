@@ -46,87 +46,57 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
   deploy-backend:
-    name: Deploy Backend to EC2
+    name: Deploy Backend to AWS Lambda
     runs-on: ubuntu-latest
+    needs: deploy-frontend
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
         with:
           ref: develop
 
-      - name: Set lowercase owner name
-        id: lowercase
-        run: echo "OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Build and Push Backend Image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./docker/Dockerfile.backend
-          push: true
-          tags: ghcr.io/${{ env.OWNER }}/reposage-backend:latest
-          no-cache: true
-
-      - name: Deploy Backend to EC2 instance via SSH
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_KEY }}
-          script: |
-            export GITHUB_USERNAME=${{ env.OWNER }}
-            export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
-            
-            # Check if disk space is critically low
-            DISK_SPACE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
-            if [ "$DISK_SPACE" -gt 90 ]; then
-              echo "CRITICAL: Disk space at $DISK_SPACE%, performing emergency cleanup"
-              sudo docker system prune -af --volumes
-            fi
-            
-            # Enhanced cleanup before deployment
-            echo "Performing thorough image cleanup before deployment..."
-            
-            # Stop and remove all containers (more forcefully)
-            echo "Stopping all containers..."
-            sudo docker-compose -f ~/docker-compose.deploy.yml down --remove-orphans 2>/dev/null || true
-            sleep 2
-            
-            # Force remove any stuck containers
-            echo "Forcing removal of any stuck containers..."
-            sudo docker ps -a -q | xargs -r sudo docker rm -f
-            sleep 2
-            
-            # Remove all images related to the application with better error handling
-            echo "Removing application images..."
-            BACKEND_IMAGES=$(sudo docker images "ghcr.io/${GITHUB_USERNAME}/reposage-backend" -q)
-            
-            if [ ! -z "$BACKEND_IMAGES" ]; then
-              echo "Removing old backend images: $BACKEND_IMAGES"
-              for img in $BACKEND_IMAGES; do
-                sudo docker rmi -f $img || echo "Failed to remove image $img, continuing..."
-              done
-            fi
-            
-            # Clean up any dangling images
-            echo "Removing dangling images..."
-            sudo docker image prune -f
-            sleep 2
-            
-            # Restart Docker in case of any stuck resources
-            echo "Restarting Docker service to ensure clean state..."
-            sudo systemctl restart docker
-            sleep 5
-            
-            echo "Starting deployment script..."
-            bash ~/pull-backend.sh 
+          python-version: '3.9'
+          
+      - name: Install Backend Dependencies
+        run: pip install -r requirements.txt
+        working-directory: ./backend
+        
+      - name: Install Serverless Framework
+        run: npm install -g serverless
+        
+      - name: Install Serverless Python Requirements Plugin
+        run: npm install --save-dev serverless-python-requirements
+        working-directory: ./backend
+        
+      - name: Deploy Backend to AWS Lambda
+        run: serverless deploy --verbose
+        working-directory: ./backend
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+          
+      - name: Get Lambda API Endpoint
+        id: get-endpoint
+        run: |
+          ENDPOINT=$(serverless info --verbose | grep -oP 'ServiceEndpoint: \K.*')
+          echo "API_ENDPOINT=$ENDPOINT" >> $GITHUB_ENV
+          echo "LAMBDA_API_ENDPOINT=$ENDPOINT" >> $GITHUB_OUTPUT
+        working-directory: ./backend
+        
+      - name: Update Vercel Environment Variables
+        run: |
+          vercel env add NEXT_PUBLIC_API_URL ${{ steps.get-endpoint.outputs.LAMBDA_API_ENDPOINT }} --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }} --project ${{ secrets.VERCEL_PROJECT_ID }} --yes
+          vercel deploy --prod --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }} --project ${{ secrets.VERCEL_PROJECT_ID }} --yes
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }} 
