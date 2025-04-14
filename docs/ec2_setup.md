@@ -45,8 +45,7 @@ This document outlines the steps needed to set up your environment for the split
    sudo chmod +x /usr/local/bin/docker-compose
    
    # Verify installations
-   docker --version
-   docker-compose --version
+   docker --version &&   docker-compose --version
    ```
 
 3. **Configure Firewall to Open Required Ports**:

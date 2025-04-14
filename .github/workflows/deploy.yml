@@ -19,23 +19,24 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
-        
+        with:
+          ref: develop
+          
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '18'
           
       - name: Install Dependencies
-        working-directory: ./frontend
         run: npm install
+        working-directory: ./frontend
         
       - name: Install Vercel CLI
         run: npm install -g vercel
         
       - name: Deploy to Vercel
-        working-directory: ./frontend
         run: |
-          vercel --prod --confirm \
+          vercel --prod --yes \
             --token ${{ secrets.VERCEL_TOKEN }} \
             --scope ${{ secrets.VERCEL_ORG_ID }} \
             --build-env NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}
@@ -50,6 +51,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
+        with:
+          ref: develop
 
       - name: Set lowercase owner name
         id: lowercase
