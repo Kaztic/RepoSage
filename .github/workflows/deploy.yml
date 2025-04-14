@@ -71,10 +71,6 @@ jobs:
         run: npm install --save-dev serverless-python-requirements
         working-directory: ./backend
         
-      - name: Serverless Login
-        run: serverless login --provider-token ${{ secrets.SERVERLESS_ACCESS_KEY }}
-        working-directory: ./backend
-        
       - name: Deploy Backend to AWS Lambda
         run: serverless deploy --verbose
         working-directory: ./backend
@@ -88,6 +84,7 @@ jobs:
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
           SERVERLESS_ORG: "kaztic"
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
           
       - name: Get Lambda API Endpoint
         id: get-endpoint

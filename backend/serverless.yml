@@ -1,6 +1,7 @@
 service: reposage-backend
 
-org: ${env:SERVERLESS_ORG, "kaztic"}
+# Dashboard configuration
+org: kaztic
 app: reposage
 
 provider:
