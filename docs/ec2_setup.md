@@ -1,14 +1,17 @@
-# EC2 Instance Setup for CI/CD Pipeline
+# Split Deployment Setup for RepoSage
 
-This document outlines the steps needed to set up your EC2 instance to work with the GitHub Actions CI/CD pipeline for RepoSage.
+This document outlines the steps needed to set up your environment for the split deployment of RepoSage, where:
+- Frontend (Next.js) is deployed to Vercel
+- Backend (FastAPI) and databases are deployed to AWS EC2
 
 ## Prerequisites
 
 - An AWS EC2 instance (t3.micro or larger) running Amazon Linux 2023
 - SSH access to the instance
 - GitHub repository with appropriate permissions
+- Vercel account with proper configuration
 
-## EC2 Instance Setup Steps
+## EC2 Instance Setup for Backend Deployment
 
 1. **Connect to your EC2 instance**:
    
@@ -42,7 +45,8 @@ This document outlines the steps needed to set up your EC2 instance to work with
    sudo chmod +x /usr/local/bin/docker-compose
    
    # Verify installations
-   docker --version && docker-compose --version
+   docker --version
+   docker-compose --version
    ```
 
 3. **Configure Firewall to Open Required Ports**:
@@ -56,8 +60,7 @@ This document outlines the steps needed to set up your EC2 instance to work with
    sudo systemctl start firewalld
    sudo systemctl enable firewalld
    
-   # Open ports for the application
-   sudo firewall-cmd --permanent --add-port=3000/tcp
+   # Open ports for the backend services
    sudo firewall-cmd --permanent --add-port=8000/tcp
    sudo firewall-cmd --permanent --add-port=5432/tcp
    sudo firewall-cmd --permanent --add-port=6380/tcp
@@ -69,18 +72,6 @@ This document outlines the steps needed to set up your EC2 instance to work with
    sudo firewall-cmd --list-all
    ```
 
-   If firewalld is not available or you prefer to use iptables directly:
-   ```bash
-   # Add iptables rules directly
-   sudo iptables -A INPUT -p tcp --dport 3000 -j ACCEPT
-   sudo iptables -A INPUT -p tcp --dport 8000 -j ACCEPT
-   sudo iptables -A INPUT -p tcp --dport 5432 -j ACCEPT
-   sudo iptables -A INPUT -p tcp --dport 6380 -j ACCEPT
-   
-   # These rules won't persist after reboot unless saved
-   # Note: Amazon Linux 2023 might not have the iptables service
-   ```
-
    Also configure AWS Security Group for your EC2 instance:
    1. Go to EC2 Dashboard in AWS Console
    2. Select your instance
@@ -88,17 +79,17 @@ This document outlines the steps needed to set up your EC2 instance to work with
    4. Click on the security group
    5. Add inbound rules for the following ports:
       - Port 22 (SSH) - restrict to your IP
-      - Port 3000 (Frontend)
       - Port 8000 (Backend API)
       - Port 5432 (PostgreSQL) - consider restricting to specific IPs
       - Port 6380 (Redis) - consider restricting to specific IPs
 
-4. **Copy required files to EC2 instance**:
+4. **Copy backend deployment script to EC2 instance**:
 
-   Upload the pull.sh script to the home directory and make it executable:
+   Upload the pull-backend.sh script to the home directory and make it executable:
 
    ```bash
-   chmod +x ~/pull.sh
+   scp -i your-key.pem pull-backend.sh ec2-user@your-ec2-ip:~/
+   ssh -i your-key.pem ec2-user@your-ec2-ip "chmod +x ~/pull-backend.sh"
    ```
 
 5. **Set up environment variables**:
@@ -118,7 +109,10 @@ This document outlines the steps needed to set up your EC2 instance to work with
    ANTHROPIC_API_KEY=your-anthropic-api-key
    ENCRYPTION_KEY=your-encryption-key
    SECRET_KEY=your-secret-key
+   FRONTEND_URL=https://reposage.vercel.app
    ```
+
+   Note: The `FRONTEND_URL` should point to your Vercel-deployed frontend application URL.
 
 6. **Configure AWS CLI** (Optional):
 
@@ -140,28 +134,27 @@ This document outlines the steps needed to set up your EC2 instance to work with
    Default output format: json
    ```
 
-   This will create credential files in the `~/.aws/` directory. You can also set these credentials manually:
+## Vercel Setup for Frontend Deployment
 
-   ```bash
-   mkdir -p ~/.aws
-   
-   cat > ~/.aws/credentials << EOF
-   [default]
-   aws_access_key_id = YOUR_ACCESS_KEY
-   aws_secret_access_key = YOUR_SECRET_KEY
-   EOF
-   
-   cat > ~/.aws/config << EOF
-   [default]
-   region = YOUR_REGION
-   output = json
-   EOF
-   ```
+1. **Connect Your GitHub Repository to Vercel**:
+   - Go to Vercel dashboard (https://vercel.com/dashboard)
+   - Click "Add New" > "Project"
+   - Import your GitHub repository
+   - Configure the project:
+     - Root Directory: ./frontend
+     - Framework Preset: Next.js
+     - Build Command: npm run build
+     - Output Directory: .next
 
-   You can verify the configuration with:
-   ```bash
-   aws sts get-caller-identity
-   ```
+2. **Set Up Environment Variables in Vercel**:
+   - In your Vercel project settings, navigate to "Environment Variables"
+   - Add the following variables:
+     - `NEXT_PUBLIC_API_URL`: The URL of your backend API (e.g., http://your-ec2-public-ip:8000)
+
+3. **Get Vercel Deployment Tokens**:
+   - Go to Vercel account settings > Tokens
+   - Create a new token with "Full Access" scope
+   - Save this token as you'll need it for GitHub Actions
 
 ## Setting up GitHub Secrets
 
@@ -172,8 +165,12 @@ In your GitHub repository, you need to add the following secrets:
    - `EC2_HOST`: The public IP of your EC2 instance
    - `EC2_USER`: The username to SSH into your EC2 instance (e.g., ec2-user)
    - `EC2_KEY`: Your private SSH key for accessing the EC2 instance
+   - `VERCEL_TOKEN`: Your Vercel API token
+   - `VERCEL_ORG_ID`: Your Vercel organization ID (find in project settings)
+   - `VERCEL_PROJECT_ID`: Your Vercel project ID (find in project settings)
+   - `NEXT_PUBLIC_API_URL`: The URL of your backend API
 
-## SSH Key Pair
+## SSH Key Pair for EC2 Access
 
 To set up the SSH key for GitHub Actions:
 
@@ -197,51 +194,61 @@ To set up the SSH key for GitHub Actions:
 
 4. Paste the entire private key (including the BEGIN and END lines) into the `EC2_KEY` secret in GitHub.
 
-## Deployment Configuration
+## Split Deployment Configuration
 
-The deployment process uses the following components:
+The split deployment process uses the following components:
 
 1. **GitHub Actions Workflow**: Located at `.github/workflows/deploy.yml` in your repository, it:
-   - Builds Docker images for frontend and backend
-   - Pushes images to GitHub Container Registry
-   - Deploys to your EC2 instance via SSH
+   - Deploys the frontend to Vercel
+   - Builds the backend Docker image and pushes it to GitHub Container Registry
+   - Deploys the backend to your EC2 instance via SSH
 
-2. **Docker Containers**:
-   - Frontend (Next.js): Accessible on port 3000
+2. **Backend Docker Containers on EC2**:
    - Backend (FastAPI): Accessible on port 8000
    - PostgreSQL: Accessible on port 5432
    - Redis: Accessible on port 6380 (maps to internal 6379)
 
-3. **Pull Script**: The `pull.sh` script located on the EC2 instance:
+3. **Frontend on Vercel**:
+   - Next.js application deployed and managed by Vercel
+   - Automatically handles CDN distribution, SSL, and scaling
+
+4. **Backend Pull Script**: The `pull-backend.sh` script located on the EC2 instance:
    - Logs into GitHub Container Registry
-   - Pulls the latest images
-   - Starts the containers using docker-compose
+   - Pulls the latest backend image
+   - Starts the backend containers using docker-compose
 
 ## Verifying the Deployment
 
 After setting up everything and pushing to the main branch:
 
 1. Check GitHub Actions workflow run status in the Actions tab of your repository
-2. Verify that Docker containers are running on your EC2 instance:
+2. Verify that backend Docker containers are running on your EC2 instance:
    ```bash
    docker ps
    ```
-3. Check if ports are correctly listening:
+3. Check if backend ports are correctly listening:
    ```bash
-   sudo netstat -tulpn | grep -E '3000|8000|5432|6380'
+   sudo netstat -tulpn | grep -E '8000|5432|6380'
    ```
-4. Access the application:
-   - Frontend: http://your-ec2-public-ip:3000
+4. Access the applications:
+   - Frontend: https://reposage.vercel.app (or your Vercel deployment URL)
    - Backend API: http://your-ec2-public-ip:8000
+
+## CORS Configuration
+
+Ensure the backend has proper CORS configuration to accept requests from the Vercel frontend:
+
+1. In your backend code, ensure the `ALLOWED_ORIGINS` environment variable is set to your Vercel frontend URL.
+2. The backend configuration in `pull-backend.sh` already sets this environment variable.
 
 ## Troubleshooting
 
 ### Connectivity Issues:
-- If services are not accessible, verify the port mappings:
+- If backend services are not accessible, verify the port mappings:
   ```bash
   docker inspect -f '{{json .NetworkSettings.Ports}}' CONTAINER_ID
   ```
-- Verify security group and iptables configurations allow traffic on relevant ports
+- Verify security group and firewalld configurations allow traffic on relevant ports
 
 ### Container Issues:
 - Check container logs:
@@ -252,28 +259,12 @@ After setting up everything and pushing to the main branch:
   ```bash
   sudo systemctl restart docker
   ```
-- Check disk space:
-  ```bash
-  df -h
-  ```
 
-### Deployment Issues:
-- If deployment gets stuck, SSH into the EC2 instance and check:
-  ```bash
-  # View Docker process status
-  sudo systemctl status docker
-  
-  # Force cleanup all Docker resources if needed
-  docker system prune -af --volumes
-  
-  # Restart Docker
-  sudo systemctl restart docker
-  ```
+### CORS Issues:
+- If frontend cannot connect to backend, check browser console for CORS errors
+- Verify the `ALLOWED_ORIGINS` in backend configuration matches the Vercel URL exactly
 
-### Port Forwarding Issues:
-- Verify that your frontend container is correctly mapping port 3000:
-  ```bash
-  # For frontend
-  docker exec -it FRONTEND_CONTAINER_ID sh -c "netstat -tulpn"
-  ```
-- Check if the Nginx or other service is correctly listening on the expected port 
+### Vercel Deployment Issues:
+- Check build logs in Vercel dashboard
+- Verify environment variables are correctly set
+- Try triggering a manual deployment from the Vercel dashboard 

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/aws-deployment-with-CI/CD
+      - develop
   workflow_dispatch:
 
 # Permission for GitHub Container Registry
@@ -12,9 +13,40 @@ permissions:
   packages: write
 
 jobs:
-  deploy:
+  deploy-frontend:
+    name: Deploy Frontend to Vercel
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Install Dependencies
+        working-directory: ./frontend
+        run: npm install
+        
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+        
+      - name: Deploy to Vercel
+        working-directory: ./frontend
+        run: |
+          vercel --prod --confirm \
+            --token ${{ secrets.VERCEL_TOKEN }} \
+            --scope ${{ secrets.VERCEL_ORG_ID }} \
+            --build-env NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
+  deploy-backend:
+    name: Deploy Backend to EC2
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -42,16 +74,7 @@ jobs:
           tags: ghcr.io/${{ env.OWNER }}/reposage-backend:latest
           no-cache: true
 
-      - name: Build and Push Frontend Image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./docker/Dockerfile.frontend
-          push: true
-          tags: ghcr.io/${{ env.OWNER }}/reposage-frontend:latest
-          no-cache: true
-
-      - name: Deploy to EC2 instance via SSH
+      - name: Deploy Backend to EC2 instance via SSH
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -84,18 +107,10 @@ jobs:
             # Remove all images related to the application with better error handling
             echo "Removing application images..."
             BACKEND_IMAGES=$(sudo docker images "ghcr.io/${GITHUB_USERNAME}/reposage-backend" -q)
-            FRONTEND_IMAGES=$(sudo docker images "ghcr.io/${GITHUB_USERNAME}/reposage-frontend" -q)
             
             if [ ! -z "$BACKEND_IMAGES" ]; then
               echo "Removing old backend images: $BACKEND_IMAGES"
               for img in $BACKEND_IMAGES; do
-                sudo docker rmi -f $img || echo "Failed to remove image $img, continuing..."
-              done
-            fi
-            
-            if [ ! -z "$FRONTEND_IMAGES" ]; then
-              echo "Removing old frontend images: $FRONTEND_IMAGES"
-              for img in $FRONTEND_IMAGES; do
                 sudo docker rmi -f $img || echo "Failed to remove image $img, continuing..."
               done
             fi
@@ -111,4 +126,4 @@ jobs:
             sleep 5
             
             echo "Starting deployment script..."
-            bash ~/pull.sh 
+            bash ~/pull-backend.sh 
