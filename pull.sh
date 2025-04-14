@@ -110,7 +110,7 @@ services:
   frontend:
     image: ghcr.io/$GITHUB_USERNAME/reposage-frontend:latest
     ports:
-      - "3000:80"
+      - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://13.61.100.168:8000
     depends_on:
