@@ -124,3 +124,7 @@ Thumbs.db
 # Frontend build
 frontend/.next/
 frontend/node_modules/
+
+# SQLite database
+*.db
+reposage.db
