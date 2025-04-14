@@ -87,25 +87,45 @@ jobs:
             
             # Enhanced cleanup before deployment
             echo "Performing thorough image cleanup before deployment..."
-            # Stop and remove running containers
-            sudo docker-compose -f ~/docker-compose.deploy.yml down 2>/dev/null || true
             
-            # Remove all images related to the application
+            # Stop and remove all containers (more forcefully)
+            echo "Stopping all containers..."
+            sudo docker-compose -f ~/docker-compose.deploy.yml down --remove-orphans 2>/dev/null || true
+            sleep 2
+            
+            # Force remove any stuck containers
+            echo "Forcing removal of any stuck containers..."
+            sudo docker ps -a -q | xargs -r sudo docker rm -f
+            sleep 2
+            
+            # Remove all images related to the application with better error handling
+            echo "Removing application images..."
             BACKEND_IMAGES=$(sudo docker images "ghcr.io/${GITHUB_USERNAME}/reposage-backend" -q)
             FRONTEND_IMAGES=$(sudo docker images "ghcr.io/${GITHUB_USERNAME}/reposage-frontend" -q)
             
             if [ ! -z "$BACKEND_IMAGES" ]; then
               echo "Removing old backend images: $BACKEND_IMAGES"
-              echo "$BACKEND_IMAGES" | xargs -r sudo docker rmi -f
+              for img in $BACKEND_IMAGES; do
+                sudo docker rmi -f $img || echo "Failed to remove image $img, continuing..."
+              done
             fi
             
             if [ ! -z "$FRONTEND_IMAGES" ]; then
               echo "Removing old frontend images: $FRONTEND_IMAGES"
-              echo "$FRONTEND_IMAGES" | xargs -r sudo docker rmi -f
+              for img in $FRONTEND_IMAGES; do
+                sudo docker rmi -f $img || echo "Failed to remove image $img, continuing..."
+              done
             fi
             
             # Clean up any dangling images
+            echo "Removing dangling images..."
             sudo docker image prune -f
+            sleep 2
             
-            # Run deployment script
+            # Restart Docker in case of any stuck resources
+            echo "Restarting Docker service to ensure clean state..."
+            sudo systemctl restart docker
+            sleep 5
+            
+            echo "Starting deployment script..."
             bash ~/pull.sh 
