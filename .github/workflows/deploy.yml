@@ -1,0 +1,132 @@
+name: Deploy Application
+
+on:
+  push:
+    branches:
+      - feature/aws-deployment-with-CI/CD
+      - develop
+  workflow_dispatch:
+
+# Permission for GitHub Container Registry
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy-frontend:
+    name: Deploy Frontend to Vercel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          ref: develop
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Install Dependencies
+        run: npm install
+        working-directory: ./frontend
+        
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+        
+      - name: Deploy to Vercel
+        run: |
+          vercel --prod --yes \
+            --token ${{ secrets.VERCEL_TOKEN }} \
+            --scope ${{ secrets.VERCEL_ORG_ID }} \
+            --build-env NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+  deploy-backend:
+    name: Deploy Backend to EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          ref: develop
+
+      - name: Set lowercase owner name
+        id: lowercase
+        run: echo "OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build and Push Backend Image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./docker/Dockerfile.backend
+          push: true
+          tags: ghcr.io/${{ env.OWNER }}/reposage-backend:latest
+          no-cache: true
+
+      - name: Deploy Backend to EC2 instance via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          script: |
+            export GITHUB_USERNAME=${{ env.OWNER }}
+            export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+            
+            # Check if disk space is critically low
+            DISK_SPACE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+            if [ "$DISK_SPACE" -gt 90 ]; then
+              echo "CRITICAL: Disk space at $DISK_SPACE%, performing emergency cleanup"
+              sudo docker system prune -af --volumes
+            fi
+            
+            # Enhanced cleanup before deployment
+            echo "Performing thorough image cleanup before deployment..."
+            
+            # Stop and remove all containers (more forcefully)
+            echo "Stopping all containers..."
+            sudo docker-compose -f ~/docker-compose.deploy.yml down --remove-orphans 2>/dev/null || true
+            sleep 2
+            
+            # Force remove any stuck containers
+            echo "Forcing removal of any stuck containers..."
+            sudo docker ps -a -q | xargs -r sudo docker rm -f
+            sleep 2
+            
+            # Remove all images related to the application with better error handling
+            echo "Removing application images..."
+            BACKEND_IMAGES=$(sudo docker images "ghcr.io/${GITHUB_USERNAME}/reposage-backend" -q)
+            
+            if [ ! -z "$BACKEND_IMAGES" ]; then
+              echo "Removing old backend images: $BACKEND_IMAGES"
+              for img in $BACKEND_IMAGES; do
+                sudo docker rmi -f $img || echo "Failed to remove image $img, continuing..."
+              done
+            fi
+            
+            # Clean up any dangling images
+            echo "Removing dangling images..."
+            sudo docker image prune -f
+            sleep 2
+            
+            # Restart Docker in case of any stuck resources
+            echo "Restarting Docker service to ensure clean state..."
+            sudo systemctl restart docker
+            sleep 5
+            
+            echo "Starting deployment script..."
+            bash ~/pull-backend.sh 
