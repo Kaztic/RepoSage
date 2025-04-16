@@ -22,7 +22,15 @@ import aiohttp
 from github import Github
 from git import Repo, GitCommandError
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+# Try to import SentenceTransformer, but make it optional
+try:
+    from sentence_transformers import SentenceTransformer
+    HAVE_SENTENCE_TRANSFORMER = True
+except ImportError:
+    HAVE_SENTENCE_TRANSFORMER = False
+    logging.warning("SentenceTransformer not available. Semantic search functionality will be limited.")
+
 import google.generativeai as genai
 from dotenv import load_dotenv
 from mangum import Mangum

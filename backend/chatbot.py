@@ -18,7 +18,14 @@ import google.generativeai as genai
 from github import Github
 from git import Repo
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+# Try to import SentenceTransformer, but make it optional
+try:
+    from sentence_transformers import SentenceTransformer
+    HAVE_SENTENCE_TRANSFORMER = True
+except ImportError:
+    HAVE_SENTENCE_TRANSFORMER = False
+    logging.warning("SentenceTransformer not available. Semantic search functionality will be limited.")
 
 # Configure logging
 logging.basicConfig(
@@ -33,9 +40,48 @@ _global_sentence_transformer = None
 def get_global_sentence_transformer():
     global _global_sentence_transformer
     if _global_sentence_transformer is None:
-        logger.info("Initializing global sentence transformer model")
-        _global_sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2')
+        if HAVE_SENTENCE_TRANSFORMER:
+            logger.info("Initializing global sentence transformer model")
+            _global_sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2')
+        else:
+            logger.warning("SentenceTransformer not available. Using simple keyword matching instead.")
+            _global_sentence_transformer = SimpleSimilarityModel()
     return _global_sentence_transformer
+
+# Simple fallback when SentenceTransformer is not available
+class SimpleSimilarityModel:
+    """Simple fallback when SentenceTransformer is not available"""
+    
+    def encode(self, texts, convert_to_tensor=False):
+        """Simple keyword-based encoding - just counts word frequency"""
+        if isinstance(texts, str):
+            texts = [texts]
+            
+        # Very basic word frequency vectorization
+        all_words = set()
+        for text in texts:
+            words = re.findall(r'\w+', text.lower())
+            all_words.update(words)
+            
+        word_to_idx = {word: i for i, word in enumerate(all_words)}
+        vectors = []
+        
+        for text in texts:
+            vector = [0] * len(word_to_idx)
+            words = re.findall(r'\w+', text.lower())
+            for word in words:
+                if word in word_to_idx:
+                    vector[word_to_idx[word]] += 1
+            # Normalize
+            magnitude = sum(v*v for v in vector) ** 0.5
+            if magnitude > 0:
+                vector = [v/magnitude for v in vector]
+            vectors.append(vector)
+            
+        return np.array(vectors)
+        
+    def __call__(self, texts, convert_to_tensor=False):
+        return self.encode(texts, convert_to_tensor)
 
 class RepoAnalyzer:
     """Analyzes repository content and history."""

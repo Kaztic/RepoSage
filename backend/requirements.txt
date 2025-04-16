@@ -5,7 +5,8 @@ anthropic==0.18.1
 pyyaml==6.0.1
 langchain==0.0.267
 langchain-anthropic==0.1.4
-sentence-transformers==2.2.2
+# sentence-transformers is too large for Lambda, using rank-bm25 for semantic search instead
+# sentence-transformers==2.2.2
 pygithub==1.59.1
 gitpython==3.1.37
 fastapi==0.103.1
@@ -26,6 +27,7 @@ alembic==1.13.1
 cryptography==42.0.5
 passlib==1.7.4
 python-jose==3.3.0
+# rank-bm25 is used as a lighter alternative to sentence-transformers
 rank-bm25==0.2.2
 radon==6.0.1
 email-validator==2.1.0

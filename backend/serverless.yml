@@ -29,6 +29,7 @@ functions:
           cors: true
     timeout: 30
     memorySize: 1024
+    ephemeralStorageSize: 2048
 
 plugins:
   - serverless-python-requirements
@@ -38,9 +39,21 @@ custom:
     dockerizePip: true
     zip: true
     slim: true
-    layer: false
+    layer: true
+    noDeploy:
+      - torch
+      - torchvision
+      - tensorflow
+      - sentence-transformers
     slimPatterns:
       - '**/*.egg-info'
       - '**/*.dist-info'
       - '**/*.pyc'
-      - '**/__pycache__' 
+      - '**/__pycache__'
+      - '**/.git/**'
+      - '**/.github/**'
+      - '**/.pytest_cache/**'
+      - '**/*.so'
+      - '**/*_test.py'
+    pipCmdExtraArgs:
+      - '--no-cache-dir'
