@@ -40,6 +40,8 @@ custom:
     zip: true
     slim: true
     layer: true
+    useStaticCache: false
+    useDownloadCache: false
     noDeploy:
       - torch
       - torchvision

@@ -78,6 +78,15 @@ jobs:
         run: npm install --save-dev serverless-python-requirements
         working-directory: ./backend
         
+      - name: Make scripts executable
+        run: |
+          chmod +x cleanup-lambda.sh
+          chmod +x get-endpoint.sh
+          
+      - name: Clean up previous Lambda deployment
+        run: ./cleanup-lambda.sh
+        continue-on-error: true # Continue if this fails (e.g., first deployment)
+        
       - name: Deploy Backend to AWS Lambda
         run: serverless deploy --verbose
         working-directory: ./backend
@@ -88,20 +97,15 @@ jobs:
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
-          SERVERLESS_ORG: "kaztic"
-          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+          # No Serverless credentials needed anymore
           
       - name: Get Lambda API Endpoint
         id: get-endpoint
-        run: |
-          ENDPOINT=$(serverless info --verbose | grep -oP 'ServiceEndpoint: \K.*')
-          echo "API_ENDPOINT=$ENDPOINT" >> $GITHUB_ENV
-          echo "LAMBDA_API_ENDPOINT=$ENDPOINT" >> $GITHUB_OUTPUT
-        working-directory: ./backend
+        run: ./get-endpoint.sh
         
       - name: Update Vercel Environment Variables
         run: |
-          vercel env add NEXT_PUBLIC_API_URL ${{ steps.get-endpoint.outputs.LAMBDA_API_ENDPOINT }} --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }} --project ${{ secrets.VERCEL_PROJECT_ID }} --yes
+          vercel env add NEXT_PUBLIC_API_URL ${{ env.ENDPOINT }} --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }} --project ${{ secrets.VERCEL_PROJECT_ID }} --yes
           vercel deploy --prod --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }} --project ${{ secrets.VERCEL_PROJECT_ID }} --yes
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
