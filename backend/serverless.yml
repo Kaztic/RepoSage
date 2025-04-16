@@ -1,5 +1,8 @@
 service: reposage-backend
 
+# Framework version
+frameworkVersion: ^3.38.0
+
 # Dashboard configuration
 org: kaztic
 app: reposage

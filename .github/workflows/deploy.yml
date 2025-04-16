@@ -71,13 +71,10 @@ jobs:
         run: pip install -r requirements.txt
         working-directory: ./backend
         
-      - name: Install Specific Serverless Framework Version
-        run: npm install -g serverless@3.38.0
-        
-      - name: Install Serverless Python Requirements Plugin
-        run: npm install --save-dev serverless-python-requirements
-        working-directory: ./backend
-        
+      - name: Install AWS SAM CLI
+        run: |
+          pip install aws-sam-cli
+          
       - name: Make scripts executable
         run: |
           chmod +x cleanup-lambda.sh
@@ -87,9 +84,52 @@ jobs:
         run: ./cleanup-lambda.sh
         continue-on-error: true # Continue if this fails (e.g., first deployment)
         
-      - name: Deploy Backend to AWS Lambda
-        run: serverless deploy --verbose
-        working-directory: ./backend
+      - name: Create SAM template
+        run: |
+          cat > template.yaml << EOF
+          AWSTemplateFormatVersion: '2010-09-09'
+          Transform: AWS::Serverless-2016-10-31
+          Resources:
+            ReposageFunction:
+              Type: AWS::Serverless::Function
+              Properties:
+                CodeUri: ./backend/
+                Handler: app.handler
+                Runtime: python3.9
+                MemorySize: 1024
+                Timeout: 30
+                Layers:
+                  - !Ref RequirementsLayer
+                Environment:
+                  Variables:
+                    GEMINI_API_KEY: ${GEMINI_API_KEY}
+                    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+                    GITHUB_TOKEN: ${GITHUB_TOKEN}
+                    ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+                    SECRET_KEY: ${SECRET_KEY}
+                    FRONTEND_URL: ${FRONTEND_URL}
+                    DATABASE_URL: sqlite:///tmp/reposage.db
+                    REDIS_URL: redis://localhost:6379/0
+                Events:
+                  Api:
+                    Type: Api
+                    Properties:
+                      Path: /{proxy+}
+                      Method: ANY
+            
+            RequirementsLayer:
+              Type: AWS::Serverless::LayerVersion
+              Properties:
+                LayerName: reposage-requirements
+                ContentUri: ./requirements/
+                CompatibleRuntimes:
+                  - python3.9
+          
+          Outputs:
+            ApiEndpoint:
+              Description: API Gateway endpoint URL
+              Value: !Sub https://\${ServerlessRestApi}.execute-api.\${AWS::Region}.amazonaws.com/Prod/
+          EOF
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -97,10 +137,26 @@ jobs:
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
-          
-      - name: Get Lambda API Endpoint
+        
+      - name: Prepare requirements layer
+        run: |
+          mkdir -p requirements/python
+          cd backend
+          pip install -r requirements.txt -t ../requirements/python
+          cd ../requirements/python
+          rm -rf torch* sentence_transformers* tensorflow*
+        
+      - name: Build and Deploy with SAM
+        run: |
+          sam build
+          sam deploy --stack-name reposage-backend --capabilities CAPABILITY_IAM --no-confirm-changeset --no-fail-on-empty-changeset
+        
+      - name: Get API Endpoint
         id: get-endpoint
-        run: ./get-endpoint.sh
+        run: |
+          ENDPOINT=$(aws cloudformation describe-stacks --stack-name reposage-backend --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text)
+          echo "ENDPOINT=$ENDPOINT" >> $GITHUB_ENV
+          echo "API endpoint: $ENDPOINT"
         
       - name: Update Vercel Environment Variables
         run: |
