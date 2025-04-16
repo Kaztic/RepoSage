@@ -181,10 +181,34 @@ jobs:
           echo "API_ENDPOINT=$API_ENDPOINT" >> $GITHUB_ENV
           echo "API endpoint: $API_ENDPOINT"
       
-      - name: Update Vercel Environment Variables
+      - name: Install API endpoint in Vercel
         run: |
-          vercel env add NEXT_PUBLIC_API_URL ${{ env.API_ENDPOINT }} --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }} --project ${{ secrets.VERCEL_PROJECT_ID }} --yes
-          vercel deploy --prod --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }} --project ${{ secrets.VERCEL_PROJECT_ID }} --yes
+          # Use cURL to update the environment variable on Vercel
+          echo "Setting API endpoint: ${{ env.API_ENDPOINT }}"
+          curl -X POST "https://api.vercel.com/v9/projects/${{ secrets.VERCEL_PROJECT_ID }}/env" \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "plain",
+              "key": "NEXT_PUBLIC_API_URL",
+              "value": "${{ env.API_ENDPOINT }}",
+              "target": ["production", "preview"]
+            }'
+            
+          # Trigger deployment
+          curl -X POST "https://api.vercel.com/v13/deployments" \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "reposage-frontend",
+              "target": "production",
+              "projectId": "${{ secrets.VERCEL_PROJECT_ID }}",
+              "gitSource": {
+                "type": "github",
+                "repo": "${{ github.repository }}",
+                "ref": "develop"
+              }
+            }'
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
