@@ -98,27 +98,40 @@ jobs:
           zip -r ../function.zip .
           cd ..
       
+      - name: Create/Ensure S3 bucket exists
+        run: |
+          # Check if bucket exists
+          if ! aws s3api head-bucket --bucket ${{ secrets.LAMBDA_BUCKET_NAME }} 2>/dev/null; then
+            echo "Creating S3 bucket for Lambda code..."
+            aws s3 mb s3://${{ secrets.LAMBDA_BUCKET_NAME }} --region us-east-1
+          fi
+      
+      - name: Upload Lambda package to S3
+        run: |
+          aws s3 cp backend/function.zip s3://${{ secrets.LAMBDA_BUCKET_NAME }}/reposage-backend-${{ github.sha }}.zip
+      
       - name: Create/Update Lambda function
         run: |
           # Check if function exists
           if aws lambda get-function --function-name reposage-backend 2>&1 | grep -q "Function not found"; then
             echo "Creating new Lambda function..."
-            # Create function
+            # Create function from S3
             aws lambda create-function \
               --function-name reposage-backend \
               --runtime python3.9 \
               --handler app.handler \
               --role ${{ secrets.LAMBDA_EXECUTION_ROLE }} \
-              --zip-file fileb://backend/function.zip \
+              --code S3Bucket=${{ secrets.LAMBDA_BUCKET_NAME }},S3Key=reposage-backend-${{ github.sha }}.zip \
               --timeout 30 \
               --memory-size 1024 \
               --environment "Variables={GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }},ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }},GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }},ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }},SECRET_KEY=${{ secrets.SECRET_KEY }},FRONTEND_URL=${{ secrets.FRONTEND_URL }},DATABASE_URL=sqlite:///tmp/reposage.db,REDIS_URL=redis://localhost:6379/0}"
           else
             echo "Updating existing Lambda function..."
-            # Update function
+            # Update function code from S3
             aws lambda update-function-code \
               --function-name reposage-backend \
-              --zip-file fileb://backend/function.zip
+              --s3-bucket ${{ secrets.LAMBDA_BUCKET_NAME }} \
+              --s3-key reposage-backend-${{ github.sha }}.zip
           fi
       
       - name: Create/Update API Gateway
