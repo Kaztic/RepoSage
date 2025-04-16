@@ -71,8 +71,8 @@ jobs:
         run: pip install -r requirements.txt
         working-directory: ./backend
         
-      - name: Install Serverless Framework
-        run: npm install -g serverless
+      - name: Install Specific Serverless Framework Version
+        run: npm install -g serverless@3.38.0
         
       - name: Install Serverless Python Requirements Plugin
         run: npm install --save-dev serverless-python-requirements
@@ -97,7 +97,6 @@ jobs:
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
-          # No Serverless credentials needed anymore
           
       - name: Get Lambda API Endpoint
         id: get-endpoint
