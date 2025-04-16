@@ -66,103 +66,105 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
-          
-      - name: Install Backend Dependencies
-        run: pip install -r requirements.txt
-        working-directory: ./backend
-        
-      - name: Install AWS SAM CLI
+      
+      - name: Install AWS CLI
+        run: pip install awscli
+      
+      - name: Create deployment package
         run: |
-          pip install aws-sam-cli
-          
-      - name: Make scripts executable
-        run: |
-          chmod +x cleanup-lambda.sh
-          chmod +x get-endpoint.sh
-          
-      - name: Clean up previous Lambda deployment
-        run: ./cleanup-lambda.sh
-        continue-on-error: true # Continue if this fails (e.g., first deployment)
-        
-      - name: Create SAM template
-        run: |
-          cat > template.yaml << EOF
-          AWSTemplateFormatVersion: '2010-09-09'
-          Transform: AWS::Serverless-2016-10-31
-          Resources:
-            ReposageFunction:
-              Type: AWS::Serverless::Function
-              Properties:
-                CodeUri: ./backend/
-                Handler: app.handler
-                Runtime: python3.9
-                MemorySize: 1024
-                Timeout: 30
-                Layers:
-                  - !Ref RequirementsLayer
-                Environment:
-                  Variables:
-                    GEMINI_API_KEY: ${GEMINI_API_KEY}
-                    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-                    GITHUB_TOKEN: ${GITHUB_TOKEN}
-                    ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-                    SECRET_KEY: ${SECRET_KEY}
-                    FRONTEND_URL: ${FRONTEND_URL}
-                    DATABASE_URL: sqlite:///tmp/reposage.db
-                    REDIS_URL: redis://localhost:6379/0
-                Events:
-                  Api:
-                    Type: Api
-                    Properties:
-                      Path: /{proxy+}
-                      Method: ANY
-            
-            RequirementsLayer:
-              Type: AWS::Serverless::LayerVersion
-              Properties:
-                LayerName: reposage-requirements
-                ContentUri: ./requirements/
-                CompatibleRuntimes:
-                  - python3.9
-          
-          Outputs:
-            ApiEndpoint:
-              Description: API Gateway endpoint URL
-              Value: !Sub https://\${ServerlessRestApi}.execute-api.\${AWS::Region}.amazonaws.com/Prod/
-          EOF
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
-          SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
-        
-      - name: Prepare requirements layer
-        run: |
-          mkdir -p requirements/python
           cd backend
-          pip install -r requirements.txt -t ../requirements/python
-          cd ../requirements/python
-          rm -rf torch* sentence_transformers* tensorflow*
-        
-      - name: Build and Deploy with SAM
+          
+          # Create a modified requirements file without large packages
+          grep -v "sentence-transformers\|torch\|tensorflow" requirements.txt > requirements-lambda.txt
+          
+          # Create function directory
+          mkdir -p lambda_package
+          
+          # Copy all files except large ones
+          cp *.py lambda_package/
+          cp requirements-lambda.txt lambda_package/requirements.txt
+          
+          # Install dependencies
+          pip install -r requirements-lambda.txt -t lambda_package/
+          
+          # Remove unnecessary files to reduce package size
+          cd lambda_package
+          find . -type d -name "__pycache__" -exec rm -rf {} +
+          find . -type d -name "*.dist-info" -exec rm -rf {} +
+          find . -type d -name "*.egg-info" -exec rm -rf {} +
+          find . -type f -name "*.pyc" -delete
+          
+          # Create ZIP file
+          zip -r ../function.zip .
+          cd ..
+      
+      - name: Create/Update Lambda function
         run: |
-          sam build
-          sam deploy --stack-name reposage-backend --capabilities CAPABILITY_IAM --no-confirm-changeset --no-fail-on-empty-changeset
-        
-      - name: Get API Endpoint
-        id: get-endpoint
+          # Check if function exists
+          if aws lambda get-function --function-name reposage-backend 2>&1 | grep -q "Function not found"; then
+            echo "Creating new Lambda function..."
+            # Create function
+            aws lambda create-function \
+              --function-name reposage-backend \
+              --runtime python3.9 \
+              --handler app.handler \
+              --role ${{ secrets.LAMBDA_EXECUTION_ROLE }} \
+              --zip-file fileb://backend/function.zip \
+              --timeout 30 \
+              --memory-size 1024 \
+              --environment "Variables={GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }},ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }},GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }},ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }},SECRET_KEY=${{ secrets.SECRET_KEY }},FRONTEND_URL=${{ secrets.FRONTEND_URL }},DATABASE_URL=sqlite:///tmp/reposage.db,REDIS_URL=redis://localhost:6379/0}"
+          else
+            echo "Updating existing Lambda function..."
+            # Update function
+            aws lambda update-function-code \
+              --function-name reposage-backend \
+              --zip-file fileb://backend/function.zip
+          fi
+      
+      - name: Create/Update API Gateway
+        id: create-api
         run: |
-          ENDPOINT=$(aws cloudformation describe-stacks --stack-name reposage-backend --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text)
-          echo "ENDPOINT=$ENDPOINT" >> $GITHUB_ENV
-          echo "API endpoint: $ENDPOINT"
-        
+          # Check if API exists
+          API_ID=$(aws apigateway get-rest-apis --query "items[?name=='reposage-api'].id" --output text)
+          
+          if [ -z "$API_ID" ]; then
+            echo "Creating new API Gateway..."
+            # Create API
+            API_ID=$(aws apigateway create-rest-api --name reposage-api --query "id" --output text)
+            
+            # Get root resource ID
+            ROOT_ID=$(aws apigateway get-resources --rest-api-id $API_ID --query "items[?path=='/'].id" --output text)
+            
+            # Create proxy resource
+            RESOURCE_ID=$(aws apigateway create-resource --rest-api-id $API_ID --parent-id $ROOT_ID --path-part "{proxy+}" --query "id" --output text)
+            
+            # Set up ANY method
+            aws apigateway put-method --rest-api-id $API_ID --resource-id $RESOURCE_ID --http-method ANY --authorization-type NONE
+            
+            # Set up Lambda integration
+            aws apigateway put-integration --rest-api-id $API_ID --resource-id $RESOURCE_ID --http-method ANY --type AWS_PROXY --integration-http-method POST --uri arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:${{ secrets.AWS_ACCOUNT_ID }}:function:reposage-backend/invocations
+            
+            # Create deployment
+            aws apigateway create-deployment --rest-api-id $API_ID --stage-name prod
+            
+            # Grant permission to API Gateway
+            aws lambda add-permission --function-name reposage-backend --statement-id apigateway-prod --action lambda:InvokeFunction --principal apigateway.amazonaws.com --source-arn "arn:aws:execute-api:us-east-1:${{ secrets.AWS_ACCOUNT_ID }}:$API_ID/prod/*/*"
+          else
+            echo "API Gateway already exists, updating deployment..."
+            # Create a new deployment
+            aws apigateway create-deployment --rest-api-id $API_ID --stage-name prod
+          fi
+          
+          # Set API endpoint
+          API_ENDPOINT="https://$API_ID.execute-api.us-east-1.amazonaws.com/prod"
+          echo "API_ENDPOINT=$API_ENDPOINT" >> $GITHUB_ENV
+          echo "API endpoint: $API_ENDPOINT"
+      
       - name: Update Vercel Environment Variables
         run: |
-          vercel env add NEXT_PUBLIC_API_URL ${{ env.ENDPOINT }} --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }} --project ${{ secrets.VERCEL_PROJECT_ID }} --yes
+          vercel env add NEXT_PUBLIC_API_URL ${{ env.API_ENDPOINT }} --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }} --project ${{ secrets.VERCEL_PROJECT_ID }} --yes
           vercel deploy --prod --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }} --project ${{ secrets.VERCEL_PROJECT_ID }} --yes
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }} 
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
