@@ -21,11 +21,34 @@ const getStoredCredentials = async () => {
   }
 };
 
+// Add default headers for AWS API Gateway if detected in URL
+const getApiHeaders = () => {
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  
+  // Check if using AWS API Gateway
+  if (API_BASE_URL.includes('execute-api.us-east-1.amazonaws.com')) {
+    // Add x-api-key header if available in environment
+    if (process.env.NEXT_PUBLIC_API_KEY) {
+      headers['x-api-key'] = process.env.NEXT_PUBLIC_API_KEY;
+    }
+  }
+  
+  return headers;
+};
+
+// Create axios instance with default headers
+const apiClient = axios.create({
+  baseURL: API_BASE_URL,
+  headers: getApiHeaders(),
+});
+
 export const fetchRepoStructure = async (repoUrl: string, accessToken?: string) => {
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/repo-structure`, {
+  const response = await apiClient.post('/api/repo-structure', {
     repo_url: repoUrl,
     access_token: token,
   });
@@ -36,7 +59,7 @@ export const fetchFileContent = async (repoUrl: string, filePath: string, access
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/file-content`, {
+  const response = await apiClient.post('/api/file-content', {
     repo_url: repoUrl,
     file_path: filePath,
     access_token: token,
@@ -52,7 +75,7 @@ export const sendChatMessage = async (
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/chat`, {
+  const response = await apiClient.post('/api/chat', {
     repo_url: repoUrl,
     messages,
     access_token: token,
@@ -66,7 +89,7 @@ export const fetchCommitHistory = async (repoUrl: string, accessToken?: string) 
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/commits`, {
+  const response = await apiClient.post('/api/commits', {
     repo_url: repoUrl,
     access_token: token,
   });
@@ -77,7 +100,7 @@ export const fetchFullCommitHistory = async (repoUrl: string, accessToken?: stri
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/full-commit-history`, {
+  const response = await apiClient.post('/api/full-commit-history', {
     repo_url: repoUrl,
     access_token: token,
   });
@@ -94,8 +117,8 @@ export const fetchCommitByHash = async (
     const token = accessToken || credentials.githubToken || undefined;
     
     // Use a longer timeout for potentially large commits
-    const response = await axios.post(
-      `${API_BASE_URL}/api/commit-by-hash`, 
+    const response = await apiClient.post(
+      '/api/commit-by-hash', 
       {
         repo_url: repoUrl,
         commit_hash: commitHash,
@@ -162,7 +185,7 @@ export const fetchFileContentAtCommit = async (
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/file-content-at-commit`, {
+  const response = await apiClient.post('/api/file-content-at-commit', {
     repo_url: repoUrl,
     commit_hash: commitHash,
     file_path: filePath,
@@ -180,7 +203,7 @@ export const fetchFileDiff = async (
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/file-diff`, {
+  const response = await apiClient.post('/api/file-diff', {
     repo_url: repoUrl,
     commit_hash: commitHash,
     file_path: filePath,
@@ -201,8 +224,8 @@ export const sendChatMessageToAI = async (
 ) => {
   // Use the debug endpoint for Gemini to diagnose issues
   const endpoint = modelProvider === 'claude' 
-    ? `${API_BASE_URL}/api/chat/claude` 
-    : `${API_BASE_URL}/api/chat/debug`;  // Use debug endpoint
+    ? '/api/chat/claude' 
+    : '/api/chat/debug';  // Use debug endpoint
     
   try {
     const credentials = await getStoredCredentials();
@@ -227,7 +250,7 @@ export const sendChatMessageToAI = async (
       gemini_api_key: '[HIDDEN]'
     }, null, 2));
     
-    const response = await axios.post(endpoint, payload);
+    const response = await apiClient.post(endpoint, payload);
     
     console.log("Response received:", response.data);
     
@@ -254,7 +277,7 @@ export const analyzeCode = async (
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/analyze-code`, {
+  const response = await apiClient.post('/api/analyze-code', {
     repo_url: repoUrl,
     file_path: filePath,
     access_token: token,
@@ -274,7 +297,7 @@ export const getCodeRecommendations = async (
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/code-recommendations`, {
+  const response = await apiClient.post('/api/code-recommendations', {
     repo_url: repoUrl,
     file_path: filePath,
     access_token: token,
@@ -294,7 +317,7 @@ export const analyzeFileContent = async (
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/analyze-file`, {
+  const response = await apiClient.post('/api/analyze-file', {
     repo_url: repoUrl,
     file_path: filePath,
     access_token: token,
@@ -315,7 +338,7 @@ export const searchCodeElement = async (
   const credentials = await getStoredCredentials();
   const token = accessToken || credentials.githubToken || undefined;
   
-  const response = await axios.post(`${API_BASE_URL}/api/search-code-element`, {
+  const response = await apiClient.post('/api/search-code-element', {
     repo_url: repoUrl,
     element_name: elementName,
     element_type: elementType,
@@ -336,7 +359,7 @@ export const validateRepository = async (
     const credentials = await getStoredCredentials();
     const token = accessToken || credentials.githubToken || undefined;
     
-    const response = await axios.post(`${API_BASE_URL}/api/validate-repo`, {
+    const response = await apiClient.post('/api/validate-repo', {
       repo_url: repoUrl,
       access_token: token
     });
