@@ -246,7 +246,7 @@ app = FastAPI(
 frontend_url = os.getenv("FRONTEND_URL", "https://reposage.vercel.app")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend_url],  # Use environment variable for Vercel frontend URL
+    allow_origins=["*"],  # Use environment variable for Vercel frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
