@@ -376,14 +376,40 @@ export default function useRepositoryState() {
         'gemini'
       );
       
+      // Extract the assistant's response content
+      const assistantContent = response.response || response.message?.content || 'I had trouble processing that request.';
+
       // Update messages with the response
       setMessages(prev => [
         ...prev.slice(0, prev.length - 1), // Remove loading message
         {
           role: 'assistant',
-          content: response.response || response.message?.content || 'I had trouble processing that request.',
+          content: assistantContent,
         },
       ]);
+
+      // *** START: Check for commit hashes in the response ***
+      const potentialHashes = assistantContent.match(/\b[a-f0-9]{7,40}\b/gi);
+      if (potentialHashes && potentialHashes.length > 0) {
+        console.log('Found potential commit hashes in response:', potentialHashes);
+        const knownHashes = new Set(commitHistory.map(c => c.hash));
+        const knownShortHashes = new Set(commitHistory.map(c => c.short_hash));
+        
+        potentialHashes.forEach(hash => {
+          // Normalize to full length for comparison if it's short
+          const isShort = hash.length < 40;
+          
+          // Check if this hash (or its short version) is already known
+          const alreadyKnown = knownHashes.has(hash) || knownShortHashes.has(hash);
+          
+          if (!alreadyKnown) {
+            console.log(`Commit hash ${hash} not found in local history. Fetching details...`);
+            // Call lookupCommitByHash without await, let it run in background
+            lookupCommitByHash(hash);
+          }
+        });
+      }
+      // *** END: Check for commit hashes in the response ***
       
       // Update relevant files
       if (response.relevant_files) {

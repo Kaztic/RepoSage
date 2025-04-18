@@ -96,7 +96,3 @@ For production deployment, we recommend:
 
 MIT 
 
-
-# TO DO
-
-USE THIS MODEL - gemini-2.0-flash-thinking-exp-1219	

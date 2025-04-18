@@ -350,39 +350,53 @@ async def get_repo_structure(repo_request: RepoRequest, background_tasks: Backgr
     repo_url = repo_request.repo_url
     access_token = repo_request.access_token
     
-    # Check if repo is already cached
-    if repo_url not in repo_cache:
-        try:
-            # Validate the repository URL first
-            validation_result = await validate_git_repo(repo_url, access_token)
-            if not validation_result["valid"]:
-                return {
-                    "status": "error", 
-                    "message": f"Invalid repository: {validation_result['reason']}",
-                    "validation_result": validation_result
-                }
-            
-            # Start analysis in background if valid
-            background_tasks.add_task(fetch_and_analyze_repo, repo_url, access_token)
-            return {
-                "status": "processing", 
-                "message": "Repository analysis started. Try again in a few seconds."
-            }
-        except Exception as e:
-            logger.error(f"Error validating repository: {e}")
-            return {
-                "status": "error",
-                "message": f"Error validating repository: {str(e)}"
-            }
-    
-    # Return file structure
-    analysis = repo_cache[repo_url]["analysis"]
-    return {
-        "status": "success", 
-        "repo_info": analysis["repo_info"],
-        "file_structure": analysis["file_structure"],
-        "important_files": analysis["important_files"]
-    }
+    # Check cache first
+    if repo_url in repo_cache:
+        # Return cached data if available and recent enough (add staleness check if needed)
+        analysis = repo_cache[repo_url]["analysis"]
+        return {
+            "status": "success", 
+            "repo_info": analysis["repo_info"],
+            "file_structure": analysis["file_structure"],
+            "important_files": analysis["important_files"]
+        }
+
+    # If not cached, proceed with validation and fetching
+    try:
+        # Validate the repository URL first
+        # Consider if validate_git_repo is still necessary if fetch_and_analyze handles errors
+        validation_result = await validate_git_repo(repo_url, access_token)
+        if not validation_result["valid"]:
+            # It's better to let fetch_and_analyze_repo handle the clone error
+            # directly for consistency, but keep validation for quick checks if desired.
+            # If keeping validation, ensure its error messages are distinct.
+             raise HTTPException(
+                 status_code=400, # Use 400 for bad input
+                 detail=f"Invalid or inaccessible repository: {validation_result.get('reason', 'Unknown reason')}"
+             )
+
+        # *** CHANGE: Await the fetch and analysis directly ***
+        # This will block until cloning/analysis is done or fails
+        analysis = await fetch_and_analyze_repo(repo_url, access_token)
+        
+        # If successful, return the structure
+        return {
+            "status": "success", 
+            "repo_info": analysis["repo_info"],
+            "file_structure": analysis["file_structure"],
+            "important_files": analysis["important_files"]
+        }
+
+    except HTTPException as e:
+        # Re-raise HTTPExceptions (like the one from fetch_and_analyze_repo or validation)
+        raise e
+    except Exception as e:
+        # Catch any other unexpected errors during the process
+        logger.error(f"Unexpected error in get_repo_structure for {repo_url}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred while processing the repository.")
+
+    # Removed the old background task logic and "processing" response.
+    # Removed the final cache check as it's handled at the beginning now.
 
 @app.post("/api/commits")
 async def get_commit_history(repo_request: RepoRequest):
