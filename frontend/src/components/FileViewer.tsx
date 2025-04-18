@@ -1,7 +1,7 @@
 import { useRef } from 'react';
-import CodeHighlighter from './CodeHighlighter';
+import { CodeHighlighter } from './CodeHighlighter';
 import { RelevantFile } from '../types';
-import { getLanguageFromPath } from '../utils/diffUtils';
+import { TbX, TbMessagePlus } from 'react-icons/tb';
 
 type FileViewerProps = {
   file: RelevantFile;
@@ -9,77 +9,79 @@ type FileViewerProps = {
   onClose: () => void;
 };
 
-export default function FileViewer({ file, onCopyToChat, onClose }: FileViewerProps) {
+const FileViewer: React.FC<FileViewerProps> = ({ file, onCopyToChat, onClose }) => {
   const selectionPopupRef = useRef<HTMLDivElement>(null);
+  const language = getLanguageFromPath(file.path);
 
   return (
-    <div className="border-l border-gray-700 overflow-hidden bg-gray-800 flex flex-col">
-      <div className="p-2 border-b border-gray-700 font-mono text-sm flex justify-between items-center">
-        <span className="truncate">{file.path}</span>
-        <button
-          onClick={onClose}
-          className="text-gray-400 hover:text-white px-2"
-        >
-          ×
-        </button>
-      </div>
-      
-      <div className="flex-1 overflow-y-auto">
-        <div className="p-4 font-mono text-sm">
-          <div className="flex justify-between items-center mb-3">
-            <span className="text-gray-300">File content:</span>
-            <button 
-              onClick={() => onCopyToChat(file.path)}
-              className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-blue-300"
-              title="Add file path to chat input"
-            >
-              Add to chat
-            </button>
-          </div>
-          <div 
-            className="relative" 
-            onMouseUp={(e) => {
-              const selection = window.getSelection();
-              if (selection && selection.toString().trim() !== '') {
-                // Show selection popup
-                const selectionRect = selection.getRangeAt(0).getBoundingClientRect();
-                if (selectionPopupRef.current) {
-                  selectionPopupRef.current.style.display = 'block';
-                  selectionPopupRef.current.style.left = `${selectionRect.left + (selectionRect.width / 2) - 50}px`;
-                  selectionPopupRef.current.style.top = `${selectionRect.top - 40}px`;
-                }
-              }
-            }}
+    <div className="file-viewer w-full h-full flex flex-col overflow-hidden bg-surface-800">
+      <div className="flex justify-between items-center p-3 border-b border-surface-700">
+        <span className="text-sm font-medium text-primary-300">{file.path}</span>
+        <div className="flex space-x-2">
+          <button 
+            onClick={() => onCopyToChat(`\`\`\`${language}:${file.path}\n${file.content}\n\`\`\``)}
+            className="flex items-center text-xs px-2 py-1 rounded bg-primary-600 hover:bg-primary-700 text-white transition-colors"
+            title="Add to chat"
           >
-            <CodeHighlighter
-              language={getLanguageFromPath(file.path)}
-              customStyle={{ background: 'transparent', margin: 0 }}
-            >
-              {file.content}
-            </CodeHighlighter>
-            <div 
-              id="selection-popup" 
-              ref={selectionPopupRef}
-              className="absolute hidden z-10 bg-gray-800 rounded shadow-lg border border-gray-700 py-1 px-2"
-            >
-              <button 
-                className="text-xs text-blue-300 hover:text-blue-200"
-                onClick={() => {
-                  const selection = window.getSelection();
-                  if (selection && selection.toString().trim() !== '') {
-                    onCopyToChat(selection.toString());
-                    if (selectionPopupRef.current) {
-                      selectionPopupRef.current.style.display = 'none';
-                    }
-                  }
-                }}
-              >
-                Add selection to chat
-              </button>
-            </div>
-          </div>
+            <TbMessagePlus className="mr-1" />
+            Add to Chat
+          </button>
+          <button 
+            onClick={onClose}
+            className="text-surface-400 hover:text-surface-200 p-1 rounded-full hover:bg-surface-700/50 transition-colors"
+            title="Close"
+          >
+            <TbX size={20} />
+          </button>
         </div>
+      </div>
+      <div className="flex-1 overflow-auto p-4 text-sm">
+        <CodeHighlighter 
+          language={language}
+          showLineNumbers={true}
+          className="rounded shadow-md"
+        >
+          {file.content}
+        </CodeHighlighter>
       </div>
     </div>
   );
-} 
+};
+
+// Helper function to determine language from file path
+function getLanguageFromPath(path: string): string {
+  const extension = path.split('.').pop()?.toLowerCase() || '';
+  
+  const extensionMap: Record<string, string> = {
+    'js': 'javascript',
+    'jsx': 'jsx',
+    'ts': 'typescript',
+    'tsx': 'tsx',
+    'py': 'python',
+    'rb': 'ruby',
+    'java': 'java',
+    'c': 'c',
+    'cpp': 'cpp',
+    'cs': 'csharp',
+    'go': 'go',
+    'php': 'php',
+    'html': 'html',
+    'css': 'css',
+    'scss': 'scss',
+    'json': 'json',
+    'md': 'markdown',
+    'yml': 'yaml',
+    'yaml': 'yaml',
+    'sh': 'bash',
+    'bash': 'bash',
+    'sql': 'sql',
+    'graphql': 'graphql',
+    'swift': 'swift',
+    'kt': 'kotlin',
+    'rs': 'rust',
+  };
+  
+  return extensionMap[extension] || 'text';
+}
+
+export default FileViewer; 

@@ -177,7 +177,7 @@ export default function ChatInterface({
           <button
             key={idx}
             onClick={() => onRequestCodeMetrics && onRequestCodeMetrics(path)}
-            className="flex items-center text-xs bg-blue-600/30 hover:bg-blue-600/50 rounded px-2 py-1"
+            className="flex items-center text-xs bg-primary-600/20 hover:bg-primary-600/30 rounded px-2 py-1 text-primary-300 transition-colors"
           >
             <FaChartBar className="mr-1" /> Analyze {path.split('/').pop()}
           </button>
@@ -190,14 +190,14 @@ export default function ChatInterface({
     if (!codeMetrics || !showMetrics) return null;
     
     return (
-      <div className="mt-4 p-4 bg-gray-900 rounded-lg border border-gray-700">
+      <div className="mt-4 p-4 bg-surface-800 rounded-lg border border-surface-700/50 shadow-subtle">
         <div className="flex justify-between items-center mb-3">
-          <h3 className="text-lg font-medium flex items-center">
-            <FaCode className="mr-2" /> Code Analysis: {codeMetrics.file_path.split('/').pop()}
+          <h3 className="text-lg font-medium flex items-center text-surface-100">
+            <FaCode className="mr-2 text-primary-400" /> Code Analysis: {codeMetrics.file_path.split('/').pop()}
           </h3>
           <button 
             onClick={() => setShowMetrics(false)}
-            className="text-gray-400 hover:text-white"
+            className="text-surface-400 hover:text-surface-200 p-1 rounded-full hover:bg-surface-700/50 transition-colors"
           >
             ×
           </button>
@@ -205,28 +205,28 @@ export default function ChatInterface({
         
         {codeMetrics.metrics && (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
-            <div className="bg-gray-800 p-3 rounded-lg">
-              <div className="text-gray-400 text-xs">Cyclomatic Complexity</div>
-              <div className="text-xl font-semibold">
+            <div className="bg-surface-900/70 p-3 rounded-lg border border-surface-700/30">
+              <div className="text-surface-400 text-xs">Cyclomatic Complexity</div>
+              <div className="text-xl font-semibold text-surface-100">
                 {Math.round(codeMetrics.metrics.cyclomatic_complexity * 10) / 10}
-                <span className="text-xs ml-1 text-gray-400">
+                <span className="text-xs ml-1 text-surface-400">
                   {codeMetrics.metrics.cyclomatic_complexity > 10 ? '(High)' : 
                    codeMetrics.metrics.cyclomatic_complexity > 5 ? '(Medium)' : '(Low)'}
                 </span>
               </div>
             </div>
             
-            <div className="bg-gray-800 p-3 rounded-lg">
-              <div className="text-gray-400 text-xs">Maintainability</div>
-              <div className="text-xl font-semibold">
+            <div className="bg-surface-900/70 p-3 rounded-lg border border-surface-700/30">
+              <div className="text-surface-400 text-xs">Maintainability</div>
+              <div className="text-xl font-semibold text-surface-100">
                 {Math.round(codeMetrics.metrics.maintainability_index ?? 0)}
-                <span className="text-xs ml-1 text-gray-400">/ 100</span>
+                <span className="text-xs ml-1 text-surface-400">/ 100</span>
               </div>
             </div>
             
-            <div className="bg-gray-800 p-3 rounded-lg">
-              <div className="text-gray-400 text-xs">Lines of Code</div>
-              <div className="text-xl font-semibold">
+            <div className="bg-surface-900/70 p-3 rounded-lg border border-surface-700/30">
+              <div className="text-surface-400 text-xs">Lines of Code</div>
+              <div className="text-xl font-semibold text-surface-100">
                 {codeMetrics.metrics.lines_of_code ?? 'N/A'}
               </div>
             </div>
@@ -235,10 +235,10 @@ export default function ChatInterface({
         
         {codeMetrics.functions && codeMetrics.functions.length > 0 && (
           <div className="mb-4">
-            <h4 className="text-sm font-medium mb-2 text-gray-300">Functions by Complexity</h4>
+            <h4 className="text-sm font-medium mb-2 text-primary-300">Functions by Complexity</h4>
             <div className="max-h-36 overflow-y-auto">
               <table className="w-full text-sm">
-                <thead className="text-xs text-gray-400">
+                <thead className="text-xs text-surface-400">
                   <tr>
                     <th className="text-left p-2">Name</th>
                     <th className="text-left p-2">Complexity</th>
@@ -255,18 +255,18 @@ export default function ChatInterface({
                     .map((func, idx) => {
                       const complexity = typeof func.complexity === 'number' ? func.complexity : 0;
                       return (
-                        <tr key={idx} className="border-t border-gray-800">
-                          <td className="p-2 font-mono text-xs">{func.name}</td>
+                        <tr key={idx} className="border-t border-surface-700/30">
+                          <td className="p-2 font-mono text-xs text-surface-200">{func.name}</td>
                           <td className="p-2">
                             <span className={`px-1.5 py-0.5 rounded text-xs ${
-                              complexity > 10 ? 'bg-red-900/30 text-red-300' : 
-                              complexity > 5 ? 'bg-yellow-900/30 text-yellow-300' : 
-                              'bg-green-900/30 text-green-300'
+                              complexity > 10 ? 'bg-red-900/30 text-red-200' : 
+                              complexity > 5 ? 'bg-yellow-900/30 text-yellow-200' : 
+                              'bg-green-900/30 text-green-200'
                             }`}>
                               {func.complexity}
                             </span>
                           </td>
-                          <td className="p-2 text-gray-400">{func.line}</td>
+                          <td className="p-2 text-surface-400">{func.line}</td>
                         </tr>
                       );
                     })}
@@ -278,8 +278,8 @@ export default function ChatInterface({
         
         {codeMetrics.recommendations && (
           <div>
-            <h4 className="text-sm font-medium mb-2 text-gray-300">AI Recommendations</h4>
-            <div className="bg-gray-800 p-3 rounded text-sm">
+            <h4 className="text-sm font-medium mb-2 text-primary-300">AI Recommendations</h4>
+            <div className="bg-surface-900/70 p-3 rounded text-sm border border-surface-700/30">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 className="prose prose-invert prose-sm max-w-none"
@@ -294,232 +294,274 @@ export default function ChatInterface({
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full max-h-full">
-      <div className="border-b border-gray-800 px-4 py-2 flex justify-between items-center">
-        <h2 className="text-lg font-semibold">Repository Chat</h2>
-        <div className="flex items-center space-x-2">
-          <div className="relative">
-            {/* Model toggle button */}
-            <div 
-              onClick={() => setShowModelSelect(!showModelSelect)}
-              className="flex items-center bg-gray-800 rounded-full px-2 py-1 text-xs cursor-pointer"
-            >
-              <span className="mr-1">Model:</span>
-              <button 
-                className={`rounded-full px-2 py-0.5 transition-colors ${
-                  useClaudeModel ? 'bg-purple-600 text-white' : 'bg-blue-600 text-white'
-                }`}
-              >
-                {useClaudeModel 
-                  ? (selectedModel === 'claude-3-opus' ? 'Claude Opus' : 
-                     selectedModel === 'claude-3-haiku' ? 'Claude Haiku' : 'Claude Sonnet')
-                  : (selectedModel === 'models/gemini-2.0-flash' ? 'Gemini 2.0 Flash' : 'Gemini 2.0 Flash Thinking')}
-              </button>
-              <svg className="w-3 h-3 ml-1 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </div>
-            
-            {showModelSelect && (
-              <div 
-                className="absolute right-0 top-8 mt-1 bg-gray-900 border border-gray-700 rounded-lg py-1 shadow-lg z-10 w-48"
-                onBlur={() => setShowModelSelect(false)}
-              >
-                <div className="px-3 py-1 text-xs font-semibold text-gray-400 border-b border-gray-700">
-                  Gemini Models
-                </div>
-                <button 
-                  onClick={() => {
-                    if (useClaudeModel) onToggleModelProvider && onToggleModelProvider();
-                    onModelChange('models/gemini-2.0-flash');
-                    setShowModelSelect(false);
-                  }}
-                  className={`flex items-center w-full px-3 py-2 text-sm hover:bg-gray-800 ${
-                    !useClaudeModel && selectedModel === 'models/gemini-2.0-flash' ? 'text-blue-400' : 'text-white'
-                  }`}
-                >
-                  <div className="w-2 h-2 rounded-full mr-2 bg-blue-500"></div>
-                  Gemini 2.0 Flash
-                </button>
-                <button 
-                  onClick={() => {
-                    if (useClaudeModel) onToggleModelProvider && onToggleModelProvider();
-                    onModelChange('models/gemini-2.0-flash-thinking-exp-1219');
-                    setShowModelSelect(false);
-                  }}
-                  className={`flex items-center w-full px-3 py-2 text-sm hover:bg-gray-800 ${
-                    !useClaudeModel && selectedModel === 'models/gemini-2.0-flash-thinking-exp-1219' ? 'text-blue-400' : 'text-white'
-                  }`}
-                >
-                  <div className="w-2 h-2 rounded-full mr-2 bg-green-300"></div>
-                  Gemini 2.0 Flash Thinking
-                </button>
-              </div>
-            )}
-          </div>
-          
-          <button
-            className="text-gray-400 hover:text-white"
-            title="About AI Models"
-          >
-            <TbInfoCircle />
-          </button>
-        </div>
-      </div>
-      
+    <div className="flex flex-col h-full max-h-full">
+      {/* Chat messages area */}
       <div 
-        ref={chatContainerRef} 
-        className="flex-1 overflow-y-auto overflow-x-hidden p-4 scroll-smooth"
-        style={{ WebkitOverflowScrolling: 'touch' }}
+        ref={chatContainerRef}
+        className="flex-1 overflow-y-auto px-4 py-2 bg-surface-900"
+        onScroll={handleScroll}
       >
         {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-gray-400">
-            <TbBrandGithub className="text-5xl mb-4" />
-            <p className="text-xl font-medium">Welcome to RepoSage</p>
-            <p className="text-sm mt-2">
-              Enter a GitHub repository URL and click Analyze to get started.
-            </p>
+          <div className="flex flex-col items-center justify-center h-full text-center p-6">
+            <div className="mb-4">
+              <TbBrandGithub className="text-6xl text-primary-400 mx-auto mb-4" />
+              <h2 className="text-2xl font-medium mb-2 text-surface-100">Welcome to RepoSage</h2>
+              <p className="text-surface-300 max-w-md mx-auto">
+                Enter a GitHub repository URL above and click "Analyze" to get started.
+                Then ask questions about the repository to explore its contents.
+              </p>
+            </div>
+            <div className="p-4 rounded-lg border border-surface-700 bg-surface-800 mt-4 max-w-md">
+              <h3 className="font-medium mb-2 text-primary-300">Example questions:</h3>
+              <ul className="space-y-2 text-sm text-left text-surface-200">
+                <li className="hover:bg-surface-800/50 p-2 rounded cursor-pointer">
+                  • What are the main components of this repository?
+                </li>
+                <li className="hover:bg-surface-800/50 p-2 rounded cursor-pointer">
+                  • Explain the purpose of file X
+                </li>
+                <li className="hover:bg-surface-800/50 p-2 rounded cursor-pointer">
+                  • What's the purpose of function Y in file Z?
+                </li>
+                <li className="hover:bg-surface-800/50 p-2 rounded cursor-pointer">
+                  • List all dependencies
+                </li>
+              </ul>
+            </div>
           </div>
         ) : (
-          <div className="space-y-6 max-w-full">
+          // Render chat messages
+          <div className="space-y-6 pt-4 pb-6 max-w-4xl mx-auto">
             {messages.map((message, index) => (
-              <div key={index} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div
-                  className={`max-w-[90%] md:max-w-3xl rounded-lg p-4 ${
-                    message.role === 'user'
-                      ? 'bg-blue-600/50 text-white'
-                      : 'bg-gray-800 text-gray-100'
-                  }`}
+              <div 
+                key={index}
+                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                <div 
+                  className={`max-w-[90%] rounded-2xl px-4 py-3 shadow-subtle
+                    ${message.role === 'user' 
+                      ? 'bg-primary-600 text-white rounded-tr-none'
+                      : 'bg-surface-800 text-surface-100 rounded-tl-none border border-surface-700'
+                    }`}
                 >
-                  {message.content === '...' ? (
-                    <FaSpinner className="animate-spin" />
-                  ) : (
-                    <>
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        className="prose prose-invert max-w-none break-words overflow-hidden"
-                        components={{
-                          code({node, className, children, ...props}: any) {
-                            const match = /language-(\w+)/.exec(className || '');
-                            const inline = !className || !match;
-                            return !inline && match ? (
-                              <div className="overflow-x-auto max-w-full">
-                                {/* @ts-ignore - Type issues with SyntaxHighlighter */}
-                                <SyntaxHighlighter
-                                  style={atomDark}
-                                  language={match[1]}
-                                  PreTag="div"
-                                  wrapLines={true}
-                                  wrapLongLines={true}
-                                  customStyle={{
-                                    margin: '0.5rem 0',
-                                    padding: '1rem',
-                                    borderRadius: '0.375rem',
-                                    maxWidth: '100%',
-                                    overflow: 'auto'
-                                  }}
-                                  {...props}
-                                >
-                                  {String(children).replace(/\n$/, '')}
-                                </SyntaxHighlighter>
-                              </div>
-                            ) : (
-                              <code className={className} {...props}>
-                                {children}
-                              </code>
-                            );
-                          },
-                          // Ensure tables are responsive
-                          table({node, ...props}) {
-                            return (
-                              <div className="overflow-x-auto w-full max-w-full">
-                                <table {...props} className="min-w-full" />
-                              </div>
-                            );
-                          },
-                          // Ensure images are responsive
-                          img({node, ...props}) {
-                            return (
-                              <img 
-                                {...props} 
-                                className="max-w-full h-auto" 
-                                style={{ maxWidth: '100%' }}
-                              />
-                            );
-                          },
-                          // Add additional style for paragraphs
-                          p({node, ...props}) {
-                            return (
-                              <p 
-                                {...props} 
-                                className="break-words whitespace-pre-wrap"
-                              />
-                            );
-                          },
-                          // Add additional style for list items
-                          li({node, ...props}) {
-                            return (
-                              <li 
-                                {...props} 
-                                className="break-words"
-                              />
-                            );
-                          }
-                        }}
-                      >
-                        {message.content}
-                      </ReactMarkdown>
-                      
-                      {message.role === 'assistant' && renderCodeMetricsButton(message.content)}
-                    </>
-                  )}
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    className="prose prose-invert prose-sm sm:prose-base max-w-none break-words"
+                    components={{
+                      code({node, className, children, ...props}: any) {
+                        const match = /language-(\w+)/.exec(className || '');
+                        const inline = !className || !match;
+                        return !inline && match ? (
+                          <div className="overflow-x-auto max-w-full">
+                            {/* @ts-ignore - Type issues with SyntaxHighlighter */}
+                            <SyntaxHighlighter
+                              style={atomDark}
+                              language={match[1]}
+                              PreTag="div"
+                              wrapLines={true}
+                              wrapLongLines={true}
+                              customStyle={{
+                                margin: '0.5rem 0',
+                                padding: '1rem',
+                                borderRadius: '0.375rem',
+                                maxWidth: '100%',
+                                overflow: 'auto'
+                              }}
+                              {...props}
+                            >
+                              {String(children).replace(/\n$/, '')}
+                            </SyntaxHighlighter>
+                          </div>
+                        ) : (
+                          <code className={className} {...props}>
+                            {children}
+                          </code>
+                        );
+                      },
+                      // Ensure tables are responsive
+                      table({node, ...props}) {
+                        return (
+                          <div className="overflow-x-auto w-full max-w-full">
+                            <table {...props} className="min-w-full" />
+                          </div>
+                        );
+                      },
+                      // Ensure images are responsive
+                      img({node, ...props}) {
+                        return (
+                          <img 
+                            {...props} 
+                            className="max-w-full h-auto" 
+                            style={{ maxWidth: '100%' }}
+                          />
+                        );
+                      },
+                      // Add additional style for paragraphs
+                      p({node, ...props}) {
+                        return (
+                          <p 
+                            {...props} 
+                            className="break-words whitespace-pre-wrap mb-3"
+                          />
+                        );
+                      },
+                      // Add additional style for list items
+                      li({node, ...props}) {
+                        return (
+                          <li 
+                            {...props} 
+                            className="break-words mb-1"
+                          />
+                        );
+                      },
+                      // Make headings stand out more
+                      h1({node, ...props}) {
+                        return (
+                          <h1 
+                            {...props} 
+                            className="text-xl font-semibold text-primary-300 mt-4 mb-3"
+                          />
+                        );
+                      },
+                      h2({node, ...props}) {
+                        return (
+                          <h2 
+                            {...props} 
+                            className="text-lg font-semibold text-primary-300 mt-4 mb-2"
+                          />
+                        );
+                      },
+                      h3({node, ...props}) {
+                        return (
+                          <h3 
+                            {...props} 
+                            className="text-md font-semibold text-primary-300 mt-3 mb-2"
+                          />
+                        );
+                      }
+                    }}
+                  >
+                    {message.content}
+                  </ReactMarkdown>
+
+                  {message.role === 'assistant' && renderCodeMetricsButton(message.content)}
                 </div>
               </div>
             ))}
-            {codeMetrics && showMetrics && renderCodeMetrics()}
-            <div ref={messagesEndRef} className="h-0.5" />
-            <button 
-              id="scroll-button"
-              onClick={scrollToBottom}
-              className="fixed bottom-20 right-6 bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-full shadow-lg z-10 flex items-center justify-center"
-              aria-label="Scroll to bottom"
-            >
-              ↓
-            </button>
+            <div className="h-4" ref={messagesEndRef}></div>
           </div>
         )}
-      </div>
-      <div className="border-t border-gray-800 p-4">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            onSendMessage();
-          }}
-          className="flex space-x-2"
+        
+        {/* Show code metrics (if available and expanded) */}
+        {renderCodeMetrics()}
+        
+        {/* Scroll to bottom button */}
+        <button
+          id="scroll-button"
+          onClick={scrollToBottom}
+          className="hidden fixed bottom-24 right-8 bg-primary-600 hover:bg-primary-700 text-white p-2 rounded-full shadow-elevated transition-all"
         >
-          <textarea
-            ref={chatInputRef}
-            className="flex-1 bg-gray-800 border border-gray-700 rounded p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 min-h-[40px] max-h-[200px] resize-y overflow-auto"
-            placeholder="Ask about the repository..."
-            value={currentInput}
-            onChange={(e) => onInputChange(e.target.value)}
-            disabled={loading || !repoInfoExists}
-            onKeyDown={handleKeyDown}
-            rows={1}
-            style={{ lineHeight: '1.5' }}
-          />
-          <button
-            type="submit"
-            className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded flex items-center justify-center disabled:opacity-50"
-            disabled={loading || !currentInput.trim() || !repoInfoExists}
-          >
-            {loading ? (
-              <FaSpinner className="animate-spin" />
-            ) : (
-              <PiPaperPlaneTilt className="text-lg" />
-            )}
-          </button>
-        </form>
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+          </svg>
+        </button>
+      </div>
+      
+      {/* Input area */}
+      <div className="p-4 border-t border-surface-700 bg-surface-800">
+        <div className="relative max-w-4xl mx-auto">
+          <div className="flex items-end rounded-lg shadow-subtle bg-surface-900 border border-surface-700 focus-within:border-primary-500 focus-within:ring-1 focus-within:ring-primary-500 transition-all duration-200">
+            <textarea
+              ref={chatInputRef}
+              value={currentInput}
+              onChange={(e) => onInputChange(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={repoInfoExists ? "Ask a question about the repository..." : "Load a repository first..."}
+              disabled={!repoInfoExists}
+              className="flex-1 p-3 bg-transparent border-none outline-none text-surface-100 placeholder-surface-500 resize-none overflow-y-auto max-h-32 min-h-[42px]"
+              style={{ scrollbarWidth: 'thin' }}
+              rows={1}
+            />
+            <div className="px-3 pb-3 flex items-center space-x-1">
+              {selectedModel && (
+                <div className="relative">
+                  <button
+                    onClick={() => setShowModelSelect(!showModelSelect)}
+                    className="text-xs px-3 py-1.5 rounded-full bg-primary-600/20 hover:bg-primary-600/30 text-primary-300 mr-2 inline-flex items-center transition-colors"
+                  >
+                    {selectedModel}
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 ml-1">
+                      <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+                    </svg>
+                  </button>
+                  
+                  {showModelSelect && (
+                    <div className="absolute bottom-10 right-0 bg-surface-800 border border-surface-700/60 rounded-lg shadow-elevated p-2 z-10 min-w-[180px]">
+                      <div className="text-xs font-medium mb-2 text-primary-300 px-2">Select Model</div>
+                      <div className="space-y-0.5">
+                        {(useClaudeModel ? ['claude-3-haiku', 'claude-3-sonnet', 'claude-3-opus'] : ['gemini-pro'])
+                          .map(model => (
+                          <button
+                            key={model}
+                            onClick={() => {
+                              onModelChange(model);
+                              setShowModelSelect(false);
+                            }}
+                            className={`block w-full text-left px-3 py-1.5 text-sm rounded 
+                              ${selectedModel === model 
+                                ? 'bg-primary-600/20 text-primary-200' 
+                                : 'hover:bg-surface-700/50 text-surface-200'}`}
+                          >
+                            {model}
+                          </button>
+                        ))}
+                      </div>
+                      
+                      {onToggleModelProvider && (
+                        <div className="mt-2 pt-2">
+                          <button
+                            onClick={() => {
+                              onToggleModelProvider();
+                              setShowModelSelect(false);
+                            }}
+                            className="block w-full text-left px-3 py-1.5 text-sm rounded bg-surface-700/30 hover:bg-surface-700/50 text-primary-300 transition-colors"
+                          >
+                            Switch to {useClaudeModel ? 'Gemini' : 'Claude'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              <button
+                onClick={onSendMessage}
+                disabled={!repoInfoExists || currentInput.trim() === '' || loading}
+                className={`p-2 rounded-full transition-all
+                  ${!repoInfoExists || currentInput.trim() === '' || loading 
+                    ? 'text-surface-600 cursor-not-allowed' 
+                    : 'text-primary-500 hover:text-primary-400 hover:bg-surface-800'
+                  }`}
+              >
+                {loading ? (
+                  <FaSpinner className="animate-spin w-5 h-5" />
+                ) : (
+                  <PiPaperPlaneTilt className="w-5 h-5" />
+                )}
+              </button>
+            </div>
+          </div>
+          <div className="mt-2 text-xs text-surface-500 flex justify-between px-1">
+            <span>
+              {repoInfoExists ? (
+                <>Press <kbd className="px-1 py-0.5 rounded bg-surface-700 text-xs">Enter</kbd> to send, <kbd className="px-1 py-0.5 rounded bg-surface-700 text-xs">Shift+Enter</kbd> for new line</>
+              ) : (
+                'Enter a repository URL to get started'
+              )}
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   );

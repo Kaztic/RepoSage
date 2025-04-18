@@ -29,7 +29,7 @@ export default function Layout({ children, title = 'RepoSage' }: LayoutProps) {
   }, []);
 
   return (
-    <div className="flex h-screen min-h-screen bg-gray-900 overflow-hidden" 
+    <div className="flex h-screen min-h-screen bg-surface-900 overflow-hidden" 
          style={{ height: 'calc(var(--vh, 1vh) * 100)' }}>
       <Head>
         <title>{title}</title>
@@ -38,7 +38,7 @@ export default function Layout({ children, title = 'RepoSage' }: LayoutProps) {
         <link rel="icon" href="/favicon.ico" />
       </Head>
 
-      <main className="flex-1 flex flex-col relative overflow-hidden max-h-full">
+      <main className="flex-1 flex flex-col relative overflow-hidden max-h-full shadow-lg">
         {children}
       </main>
     </div>

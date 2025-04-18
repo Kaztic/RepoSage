@@ -312,7 +312,7 @@ async def fetch_and_analyze_repo(repo_url: str, access_token: Optional[str] = No
         
         # Clone without depth limitation for better commit history access
         logger.info(f"Cloning repository {repo_url} to {repo_path}")
-        Repo.clone_from(clone_url, repo_path)
+        Repo.clone_from(clone_url, repo_path, depth=1000)
         logger.info(f"Repository cloned to {repo_path}")
         
         # Initialize and run analysis on the cloned repo
@@ -957,7 +957,7 @@ async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
                         auth_url = repo_url
                         
                     logger.info(f"Cloning repository: {repo_url} to {clone_dir}")
-                    repo = Repo.clone_from(auth_url, clone_dir, depth=200)  # Use depth to speed up clone
+                    repo = Repo.clone_from(auth_url, clone_dir, depth=1000)  # Increased depth from 200 to 1000
                     
                     # Create analyzer
                     repo_analyzer = RepoAnalyzer(clone_dir)
@@ -982,6 +982,60 @@ async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
             commit_info = repo_analyzer.get_commit_by_hash(commit_hash)
             
             if not commit_info:
+                logger.warning(f"Commit {commit_hash} not found in local repo. Trying GitHub API fallback...")
+                
+                # Fallback to GitHub API if it's a GitHub repo
+                if repo_url.startswith('https://github.com/'):
+                    try:
+                        # Parse GitHub repository owner and name
+                        parts = repo_url.strip('/').split('/')
+                        if len(parts) >= 5:
+                            owner = parts[3]
+                            repo_name = parts[4]
+                            
+                            # Use GitHub API to fetch the commit
+                            from github import Github
+                            gh = Github(access_token) if access_token else Github()
+                            gh_repo = gh.get_repo(f"{owner}/{repo_name}")
+                            
+                            # Try to get the commit
+                            gh_commit = gh_repo.get_commit(commit_hash)
+                            
+                            # Format the commit data in the same way as our local format
+                            commit_info = {
+                                "hash": gh_commit.sha,
+                                "short_hash": gh_commit.sha[:7],
+                                "author": f"{gh_commit.commit.author.name} <{gh_commit.commit.author.email}>",
+                                "date": gh_commit.commit.author.date.isoformat(),
+                                "message": gh_commit.commit.message.strip(),
+                                "stats": {
+                                    "files_changed": len(gh_commit.files),
+                                    "insertions": sum(f.additions for f in gh_commit.files),
+                                    "deletions": sum(f.deletions for f in gh_commit.files)
+                                },
+                                "file_changes": [
+                                    {
+                                        "path": f.filename,
+                                        "change_type": "added" if f.status == "added" else 
+                                                       "deleted" if f.status == "removed" else 
+                                                       "renamed" if f.status == "renamed" else "modified",
+                                        "insertions": f.additions,
+                                        "deletions": f.deletions
+                                    } for f in gh_commit.files
+                                ]
+                            }
+                            
+                            logger.info(f"Successfully fetched commit {commit_hash} via GitHub API")
+                            return {
+                                "status": "success",
+                                "commit": commit_info,
+                                "source": "github_api"
+                            }
+                    except Exception as e:
+                        logger.error(f"GitHub API fallback failed: {e}")
+                        # Continue to standard error handling
+                
+                # If GitHub API fallback failed or wasn't applicable
                 logger.warning(f"Commit {commit_hash} not found")
                 return {
                     "status": "error",
@@ -1871,6 +1925,96 @@ async def validate_repository(repo_request: RepoRequest):
             "status": "failed",
             "valid": False,
             "reason": validation_result["reason"]
+        }
+
+@app.post("/api/github-commit")
+async def get_github_commit(request: Dict[str, str] = Body(...)):
+    """
+    Get commit details directly from GitHub API, without requiring a local clone.
+    This is useful for viewing older commits outside our clone depth.
+    """
+    repo_url = request.get("repo_url")
+    commit_hash = request.get("commit_hash")
+    access_token = request.get("access_token")
+    
+    logger.info(f"Looking up GitHub commit directly: {commit_hash} for repo: {repo_url}")
+    
+    if not repo_url or not commit_hash:
+        raise HTTPException(status_code=400, detail="Repository URL and commit hash are required")
+        
+    # Verify this is a GitHub repo
+    if not repo_url.startswith('https://github.com/'):
+        return {
+            "status": "error",
+            "message": "This endpoint only works with GitHub repositories."
+        }
+    
+    try:
+        # Parse GitHub repository owner and name
+        parts = repo_url.strip('/').split('/')
+        if len(parts) < 5:
+            return {
+                "status": "error",
+                "message": "Invalid GitHub repository URL format."
+            }
+            
+        owner = parts[3]
+        repo_name = parts[4]
+        
+        # Use GitHub API to fetch the commit
+        from github import Github
+        gh = Github(access_token) if access_token else Github()
+        
+        # Add rate limit diagnostics
+        rate_limit = gh.get_rate_limit()
+        remaining = rate_limit.core.remaining
+        logger.info(f"GitHub API rate limit remaining: {remaining}")
+        
+        if remaining < 10:
+            logger.warning(f"GitHub API rate limit low: {remaining} remaining")
+            
+        gh_repo = gh.get_repo(f"{owner}/{repo_name}")
+        
+        # Fetch the commit
+        gh_commit = gh_repo.get_commit(commit_hash)
+        
+        # Format the commit data
+        commit_info = {
+            "hash": gh_commit.sha,
+            "short_hash": gh_commit.sha[:7],
+            "author": f"{gh_commit.commit.author.name} <{gh_commit.commit.author.email}>",
+            "date": gh_commit.commit.author.date.isoformat(),
+            "message": gh_commit.commit.message.strip(),
+            "stats": {
+                "files_changed": len(gh_commit.files),
+                "insertions": sum(f.additions for f in gh_commit.files),
+                "deletions": sum(f.deletions for f in gh_commit.files)
+            },
+            "file_changes": [
+                {
+                    "path": f.filename,
+                    "change_type": "added" if f.status == "added" else 
+                                "deleted" if f.status == "removed" else 
+                                "renamed" if f.status == "renamed" else "modified",
+                    "insertions": f.additions,
+                    "deletions": f.deletions,
+                    "patch": f.patch if hasattr(f, 'patch') else None
+                } for f in gh_commit.files
+            ]
+        }
+        
+        logger.info(f"Successfully fetched GitHub commit: {gh_commit.sha}")
+        return {
+            "status": "success",
+            "commit": commit_info,
+            "source": "github_api_direct"
+        }
+            
+    except Exception as e:
+        logger.error(f"Error fetching commit from GitHub: {e}", exc_info=True)
+        return {
+            "status": "error", 
+            "message": f"Error fetching commit from GitHub: {str(e)}"
         }
 
 if __name__ == "__main__":

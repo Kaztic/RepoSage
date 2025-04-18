@@ -2,6 +2,7 @@ export type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
   timestamp?: string;
+  id?: string;
 };
 
 export type FileStructure = {

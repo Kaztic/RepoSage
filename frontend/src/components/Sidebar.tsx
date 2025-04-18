@@ -85,7 +85,7 @@ export default function Sidebar({
   // Recursive function to render file structure
   const renderFileStructure = (structure: any, path: string = '') => {
     return (
-      <ul className="pl-4">
+      <ul className="pl-3">
         {Object.entries(structure)
           .sort(([keyA], [keyB]) => {
             // Sort folders first, then files
@@ -102,9 +102,12 @@ export default function Sidebar({
             const isRelevant = relevantFiles.includes(currentPath);
 
             return (
-              <li key={currentPath} className={`py-1 ${isRelevant ? 'bg-yellow-900/20 rounded' : ''}`}>
+              <li key={currentPath} className={`py-0.5 text-sm ${isRelevant ? 'bg-primary-900/30 rounded' : ''}`}>
                 <div
-                  className="flex items-center cursor-pointer hover:bg-gray-700/30 rounded px-2 py-1"
+                  className={`flex items-center cursor-pointer rounded px-2 py-1.5 transition-colors
+                    ${isRelevant 
+                      ? 'text-primary-300 font-medium hover:bg-primary-800/20' 
+                      : 'text-surface-200 hover:bg-surface-700/40'}`}
                   onClick={() => {
                     if (isFolder) {
                       onToggleFolder(currentPath);
@@ -113,12 +116,16 @@ export default function Sidebar({
                     }
                   }}
                 >
-                  <span className="mr-2 text-gray-400">
+                  <span className={`mr-2 ${isFolder ? (isRelevant ? 'text-primary-400' : 'text-surface-400') : (isRelevant ? 'text-primary-400' : 'text-surface-500')}`}>
                     {isFolder ? (isExpanded ? <FaFolderOpen /> : <FaFolder />) : <FaFile />}
                   </span>
-                  <span className={isRelevant ? 'text-yellow-200 font-medium' : ''}>{key}</span>
+                  <span className="truncate">{key}</span>
                 </div>
-                {isFolder && isExpanded && renderFileStructure(value, currentPath)}
+                {isFolder && isExpanded && (
+                  <div className="mt-1 border-l border-surface-700 ml-3">
+                    {renderFileStructure(value, currentPath)}
+                  </div>
+                )}
               </li>
             );
           })}
@@ -130,7 +137,7 @@ export default function Sidebar({
   const renderCommitHistory = () => {
     if (loadingHistory && commitHistory.length === 0) {
       return (
-        <div className="flex justify-center items-center p-8">
+        <div className="flex justify-center items-center p-8 text-surface-300">
           <FaSpinner className="animate-spin text-2xl" />
           <span className="ml-2">Loading commit history...</span>
         </div>
@@ -139,19 +146,19 @@ export default function Sidebar({
 
     if (commitHistory.length === 0) {
       return (
-        <div className="text-center p-8 text-gray-400">
+        <div className="text-center p-8 text-surface-400">
           <p>No commit history available</p>
         </div>
       );
     }
 
     return (
-      <div className="space-y-2 p-2">
+      <div className="space-y-1.5 p-2">
         {!showFullHistory && commitHistory.length > 0 && (
           <div className="flex justify-center mb-4">
             <button
               onClick={onFetchFullHistory}
-              className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 rounded"
+              className="px-3 py-1.5 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-md shadow-sm transition-colors duration-200"
               disabled={loadingHistory}
             >
               {loadingHistory ? (
@@ -168,7 +175,7 @@ export default function Sidebar({
         
         {/* Show loading indicator at the top when loading more commits */}
         {loadingHistory && commitHistory.length > 0 && (
-          <div className="flex items-center justify-center py-2 text-sm text-blue-400">
+          <div className="flex items-center justify-center py-2 text-sm text-primary-400">
             <FaSpinner className="animate-spin mr-2" />
             <span>Loading commit history...</span>
           </div>
@@ -177,22 +184,22 @@ export default function Sidebar({
         {commitHistory.map((commit) => (
           <div 
             key={commit.hash} 
-            className="p-3 hover:bg-gray-700/50 rounded cursor-pointer"
+            className="p-3 bg-surface-800/80 hover:bg-surface-700/50 rounded-lg border border-surface-700/50 cursor-pointer transition-colors duration-150 shadow-subtle"
             onClick={() => onViewCommitDetails(commit)}
           >
             <div className="flex items-start">
-              <div className="text-gray-400 mr-2 font-mono text-sm">
+              <div className="text-primary-400 mr-2 font-mono text-sm">
                 {commit.short_hash}
               </div>
-              <div className="flex-1">
-                <p className="font-medium">{commit.message.split('\n')[0]}</p>
-                <p className="text-sm text-gray-400">
+              <div className="flex-1 overflow-hidden">
+                <p className="font-medium text-surface-200 truncate">{commit.message.split('\n')[0]}</p>
+                <p className="text-xs text-surface-400 mt-1 truncate">
                   {commit.author.split('<')[0]} • {new Date(commit.date).toLocaleDateString()}
                 </p>
-                <div className="text-xs text-gray-500 mt-1">
-                  {commit.stats.files_changed} files changed
-                  {commit.stats.insertions > 0 && <span className="text-green-400 ml-1">+{commit.stats.insertions}</span>}
-                  {commit.stats.deletions > 0 && <span className="text-red-400 ml-1">-{commit.stats.deletions}</span>}
+                <div className="text-xs mt-1 flex items-center">
+                  <span className="text-surface-500">{commit.stats.files_changed} files</span>
+                  {commit.stats.insertions > 0 && <span className="text-green-400 ml-2">+{commit.stats.insertions}</span>}
+                  {commit.stats.deletions > 0 && <span className="text-red-400 ml-2">-{commit.stats.deletions}</span>}
                 </div>
               </div>
             </div>
@@ -203,108 +210,127 @@ export default function Sidebar({
   };
 
   return (
-    <>
-      {repoInfo ? (
-        <>
-          <div 
-            className="p-4 border-b border-gray-700 overflow-y-auto" 
-            style={{ height: `${overviewHeight}px` }}
-          >
-            <h2 className="text-lg font-semibold flex items-center">
-              <FaGithub className="mr-2" />
-              {repoInfo.name}
-            </h2>
-            <p className="text-sm text-gray-400">{repoInfo.description}</p>
-            <div className="mt-2 text-xs bg-gray-700 rounded px-2 py-1 inline-block">
-              {repoInfo.default_branch}
-            </div>
-          </div>
-          
-          {/* Resizable handle */}
-          <div 
-            ref={dragHandleRef}
-            className="h-1 bg-gray-700 hover:bg-blue-500 cursor-ns-resize flex items-center justify-center"
-            onMouseDown={handleMouseDown}
-          >
-            <div className="w-8 h-1 rounded-full bg-gray-600"></div>
-          </div>
-          
-          {/* Navigation tabs */}
-          <div className="flex border-b border-gray-700">
-            <button 
-              className={`flex-1 py-2 px-4 text-sm font-medium ${
-                activeTab === 'files' ? 'border-b-2 border-blue-500 text-white' : 'text-gray-400 hover:text-white'
-              }`} 
-              onClick={() => onTabClick('files')}
-            >
-              Files
-            </button>
-            <button 
-              className={`flex-1 py-2 px-4 text-sm font-medium ${
-                activeTab === 'commits' ? 'border-b-2 border-blue-500 text-white' : 'text-gray-400 hover:text-white'
-              }`}
-              onClick={() => onTabClick('commits')}
-            >
-              Commits
-            </button>
-          </div>
-          
-          <div className="flex-1 overflow-y-auto p-2">
-            {activeTab === 'files' ? (
-              <>
-                <h3 className="font-medium px-2 py-1 text-gray-300 text-sm">Repository Files</h3>
-                {Object.keys(fileStructure).length > 0 ? (
-                  renderFileStructure(fileStructure)
-                ) : (
-                  <p className="text-gray-400 text-sm px-2">No files found.</p>
-                )}
-              </>
-            ) : (
-              <>
-                <div className="mb-2 px-2">
-                  <h3 className="font-medium py-1 text-gray-300 text-sm">Find Commit</h3>
-                  <div className="flex items-center">
-                    <input
-                      type="text"
-                      value={commitHashInput}
-                      onChange={(e) => onCommitHashChange(e.target.value)}
-                      placeholder="Enter commit hash"
-                      className="flex-grow py-1 px-2 bg-gray-700 rounded-l border border-gray-600 text-white text-sm"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && commitHashInput.trim()) {
-                          e.preventDefault();
-                          onLookupCommit();
-                        }
-                      }}
-                    />
-                    <button
-                      onClick={onLookupCommit}
-                      disabled={!commitHashInput.trim()}
-                      className={`py-1 px-2 rounded-r border border-l-0 border-gray-600 text-sm ${
-                        !commitHashInput.trim()
-                          ? 'bg-gray-600 cursor-not-allowed'
-                          : 'bg-blue-600 hover:bg-blue-700'
-                      }`}
-                    >
-                      Go
-                    </button>
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1">
-                    You can enter a full or short hash
-                  </p>
+    <div className="flex flex-col h-full">
+      {/* Repository Overview Section */}
+      <div 
+        className="overflow-hidden bg-surface-900 border-b border-surface-700 transition-all duration-200"
+        style={{ height: `${overviewHeight}px` }}
+      >
+        <div className="p-3">
+          {repoInfo ? (
+            <>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center">
+                  <FaGithub className="text-surface-300 mr-2" />
+                  <h2 className="text-lg font-semibold text-surface-100 truncate">
+                    {repoInfo.name}
+                  </h2>
                 </div>
-                <h3 className="font-medium px-2 py-1 text-gray-300 text-sm">Commit History</h3>
-                {renderCommitHistory()}
-              </>
-            )}
+                <div className="text-xs text-surface-400 rounded-full bg-surface-800 px-2 py-0.5 border border-surface-700">
+                  {repoInfo.default_branch}
+                </div>
+              </div>
+              <div className="text-sm text-surface-400 mt-2 truncate">
+                {repoInfo.full_name}
+              </div>
+              {repoInfo.description && (
+                <div className="text-xs text-surface-300 mt-2 line-clamp-2">
+                  {repoInfo.description}
+                </div>
+              )}
+              <div className="flex space-x-2 mt-3 text-xs">
+                <div className="bg-surface-800 rounded-md px-2 py-1 text-surface-300 border border-surface-700/50">
+                  {repoInfo.stars} stars
+                </div>
+                <div className="bg-surface-800 rounded-md px-2 py-1 text-surface-300 border border-surface-700/50">
+                  {repoInfo.forks} forks
+                </div>
+                <div className="bg-surface-800 rounded-md px-2 py-1 text-surface-300 border border-surface-700/50">
+                  {repoInfo.language}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full text-surface-400">
+              <p>No repository loaded</p>
+            </div>
+          )}
+        </div>
+      </div>
+      
+      {/* Resizer for overview section */}
+      <div 
+        ref={dragHandleRef}
+        className="h-1.5 bg-surface-800 hover:bg-primary-600 cursor-row-resize flex justify-center items-center transition-colors"
+        onMouseDown={handleMouseDown}
+      >
+        <div className="w-10 h-0.5 bg-surface-600 rounded-full"></div>
+      </div>
+      
+      {/* Tabs for Files and Commits */}
+      <div className="bg-surface-800 border-b border-surface-700 p-1">
+        <div className="flex">
+          <button
+            className={`flex-1 py-2 px-3 text-sm font-medium rounded transition-colors duration-200
+              ${activeTab === 'files' 
+                ? 'bg-surface-700 text-white shadow-sm' 
+                : 'text-surface-300 hover:bg-surface-700/50 hover:text-surface-200'}`}
+            onClick={() => onTabClick('files')}
+          >
+            Files
+          </button>
+          <button
+            className={`flex-1 py-2 px-3 text-sm font-medium rounded transition-colors duration-200
+              ${activeTab === 'commits' 
+                ? 'bg-surface-700 text-white shadow-sm' 
+                : 'text-surface-300 hover:bg-surface-700/50 hover:text-surface-200'}`}
+            onClick={() => onTabClick('commits')}
+          >
+            Commits
+          </button>
+        </div>
+      </div>
+      
+      {/* Commit Search (when in commits tab) */}
+      {activeTab === 'commits' && (
+        <div className="p-2 border-b border-surface-700 bg-surface-800">
+          <div className="flex space-x-1">
+            <input
+              type="text"
+              value={commitHashInput}
+              onChange={(e) => onCommitHashChange(e.target.value)}
+              placeholder="Commit hash"
+              className="flex-1 bg-surface-900 border border-surface-700 text-sm px-2 py-1.5 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-500 text-surface-200 placeholder-surface-500"
+            />
+            <button
+              onClick={onLookupCommit}
+              disabled={!commitHashInput.trim() || loadingHistory}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium
+                ${commitHashInput.trim() && !loadingHistory
+                  ? 'bg-primary-600 hover:bg-primary-700 text-white'
+                  : 'bg-surface-700 text-surface-400 cursor-not-allowed'}`}
+            >
+              Find
+            </button>
           </div>
-        </>
-      ) : (
-        <div className="text-center text-gray-400 mt-8">
-          <FaGithub className="text-4xl mx-auto mb-4 opacity-50" />
-          <p>Enter a GitHub repository URL and click "Analyze" to start</p>
         </div>
       )}
-    </>
+      
+      {/* File Structure or Commits Content */}
+      <div className="flex-1 overflow-y-auto p-2 bg-surface-900/50">
+        {activeTab === 'files' ? (
+          Object.keys(fileStructure).length > 0 ? (
+            renderFileStructure(fileStructure)
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full text-surface-400 p-4">
+              <p>No file structure available</p>
+              <p className="text-xs mt-2">Analyze a repository to view files</p>
+            </div>
+          )
+        ) : (
+          renderCommitHistory()
+        )}
+      </div>
+    </div>
   );
 } 

@@ -16,7 +16,7 @@ from datetime import datetime
 import requests
 import google.generativeai as genai
 from github import Github
-from git import Repo
+from git import Repo, GitCommandError
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
@@ -220,9 +220,20 @@ class RepoAnalyzer:
                 if commit_hash == commit["hash"] or commit["hash"].startswith(commit_hash) or commit["short_hash"] == commit_hash:
                     return commit
             
-            # If not found, try to get directly from git
+            # If not found in cache, try to resolve the hash using git rev-parse
+            # This helps with very short or ambiguous hashes
             try:
-                # Now try to get the commit
+                full_hash = self.repo.git.rev_parse(f"{commit_hash}")
+                if full_hash:
+                    # If we get here, the hash is valid but wasn't in our cache
+                    logger.info(f"Resolved short hash {commit_hash} to full hash {full_hash}")
+                    commit_hash = full_hash
+            except GitCommandError as e:
+                # If rev-parse fails, continue with the original hash
+                pass
+            
+            # Now try to get the commit
+            try:
                 commit = self.repo.commit(commit_hash)
                 
                 commit_info = {
@@ -409,6 +420,20 @@ class RepoAnalyzer:
                 commit_info["file_changes"] = file_changes
                 
                 return commit_info
+            except ValueError as e:
+                if "Check that it exists" in str(e):
+                    logger.error(f"Commit {commit_hash} not found in repository. This might be due to shallow clone limits.")
+                    return None
+            except GitCommandError as e:
+                if "bad object" in str(e) or "not in" in str(e):
+                    logger.error(f"Git error: Commit {commit_hash} not found. This may be outside the shallow clone depth.")
+                    return {
+                        "status": "error",
+                        "message": f"Commit {commit_hash} not found. This may be because it's older than the repository clone depth (1000 commits). Try using a more recent commit."
+                    }
+                else:
+                    logger.error(f"Git error retrieving commit {commit_hash}: {e}")
+                    return None
             except Exception as e:
                 logger.error(f"Error retrieving commit {commit_hash}: {e}")
                 return None

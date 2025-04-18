@@ -28,34 +28,46 @@ export default function Header({
   onOpenCommitSearch
 }: HeaderProps) {
   return (
-    <header className="flex flex-col border-b border-gray-700 bg-gray-800">
-      <div className="flex items-center justify-between p-4">
+    <header className="flex flex-col border-b border-surface-700 bg-surface-800 shadow-subtle">
+      <div className="flex items-center justify-between p-3">
         <div className="flex items-center">
-          <TbBrandGithub className="text-3xl mr-2" />
-          <h1 className="text-xl font-bold">RepoSage</h1>
+          <TbBrandGithub className="text-3xl mr-2 text-primary-400" />
+          <h1 className="text-xl font-bold text-surface-100">RepoSage</h1>
         </div>
         <div className="flex space-x-2 w-2/3">
-          <input
-            type="text"
-            placeholder="GitHub Repository URL (e.g., https://github.com/user/repo)"
-            className="flex-grow p-2 bg-gray-700 rounded border border-gray-600 text-white"
-            value={repoUrl}
-            onChange={(e) => onRepoUrlChange(e.target.value)}
-          />
-          <input
-            type="password"
-            placeholder="GitHub Token (optional for private repos)"
-            className="w-1/3 p-2 bg-gray-700 rounded border border-gray-600 text-white"
-            value={accessToken}
-            onChange={(e) => onAccessTokenChange(e.target.value)}
-          />
+          <div className="flex-grow relative">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <FaSearch className="text-surface-400 text-sm" />
+            </div>
+            <input
+              type="text"
+              placeholder="GitHub Repository URL (e.g., https://github.com/user/repo)"
+              className="w-full pl-10 p-2.5 bg-surface-900 rounded-md border border-surface-700 text-surface-200 placeholder-surface-500
+                         focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all duration-200"
+              value={repoUrl}
+              onChange={(e) => onRepoUrlChange(e.target.value)}
+            />
+          </div>
+          <div className="w-1/3 relative">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <FaKey className="text-surface-400 text-sm" />
+            </div>
+            <input
+              type="password"
+              placeholder="GitHub Token (optional)"
+              className="w-full pl-10 p-2.5 bg-surface-900 rounded-md border border-surface-700 text-surface-200 placeholder-surface-500
+                         focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all duration-200"
+              value={accessToken}
+              onChange={(e) => onAccessTokenChange(e.target.value)}
+            />
+          </div>
           <button
             onClick={onAnalyze}
             disabled={loading || !repoUrl}
-            className={`px-4 py-2 rounded font-medium flex items-center ${
+            className={`px-4 py-2.5 rounded-md font-medium flex items-center shadow-sm transition-all duration-200 ${
               loading || !repoUrl
-                ? 'bg-gray-600 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700'
+                ? 'bg-surface-700 text-surface-400 cursor-not-allowed'
+                : 'bg-primary-600 hover:bg-primary-700 text-white'
             }`}
           >
             {loading ? (
@@ -67,44 +79,46 @@ export default function Header({
               'Analyze'
             )}
           </button>
-          {onOpenCommitSearch && (
-            <button
-              className="bg-green-600 hover:bg-green-700 text-white p-2 rounded flex items-center gap-2"
-              onClick={onOpenCommitSearch}
-              disabled={loading}
-              title="Find Commit"
-            >
-              <FaCodeBranch />
-            </button>
-          )}
-          {onManageCredentials && (
-            <button
-              className="bg-purple-600 hover:bg-purple-700 text-white p-2 rounded flex items-center gap-2"
-              onClick={onManageCredentials}
-              disabled={loading}
-              title="Manage API Credentials"
-            >
-              <FaKey />
-            </button>
-          )}
-          {onClearChat && (
-            <button
-              className="bg-red-600 hover:bg-red-700 text-white p-2 rounded flex items-center gap-2"
-              onClick={onClearChat}
-              disabled={loading}
-              title="Clear chat history"
-            >
-              <FaTrash />
-            </button>
-          )}
+          <div className="flex space-x-1">
+            {onOpenCommitSearch && (
+              <button
+                className="bg-surface-700 hover:bg-surface-600 text-surface-200 p-2.5 rounded-md flex items-center justify-center transition-colors duration-200"
+                onClick={onOpenCommitSearch}
+                disabled={loading}
+                title="Find Commit"
+              >
+                <FaCodeBranch className="text-lg" />
+              </button>
+            )}
+            {onManageCredentials && (
+              <button
+                className="bg-surface-700 hover:bg-surface-600 text-surface-200 p-2.5 rounded-md flex items-center justify-center transition-colors duration-200"
+                onClick={onManageCredentials}
+                disabled={loading}
+                title="Manage API Credentials"
+              >
+                <FaKey className="text-lg" />
+              </button>
+            )}
+            {onClearChat && (
+              <button
+                className="bg-surface-700 hover:bg-red-600 text-surface-200 hover:text-white p-2.5 rounded-md flex items-center justify-center transition-colors duration-200"
+                onClick={onClearChat}
+                disabled={loading}
+                title="Clear chat history"
+              >
+                <FaTrash className="text-lg" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
       
       {/* Progress bar for analysis */}
       {analysisProgress > 0 && analysisProgress < 100 && (
-        <div className="w-full h-1 bg-gray-700">
+        <div className="w-full h-1 bg-surface-700">
           <div 
-            className="h-full bg-blue-500 transition-all duration-300 ease-out"
+            className="h-full bg-primary-500 transition-all duration-300 ease-out"
             style={{ width: `${analysisProgress}%` }}
           />
         </div>
