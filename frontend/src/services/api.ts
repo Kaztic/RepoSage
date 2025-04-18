@@ -9,7 +9,6 @@ const GEMINI_MODEL = "models/gemini-2.0-flash-thinking-exp";
 
 // Create axios instance
 const apiClient = axios.create({
-  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },

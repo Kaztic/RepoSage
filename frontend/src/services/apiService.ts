@@ -40,7 +40,6 @@ const getApiHeaders = () => {
 
 // Create axios instance with default headers
 const apiClient = axios.create({
-  baseURL: API_BASE_URL,
   headers: getApiHeaders(),
 });
 
