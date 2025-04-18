@@ -34,7 +34,7 @@ If you don't have Conda installed, follow these steps:
 1.  **Clone the RepoSage Repository**:
     Open your terminal and clone this project:
     ```bash
-    git clone <your-repository-clone-url> # Replace with the actual URL
+    git clone https://github.com/Kaztic/RepoSage.git
     cd RepoSage # Or your repository's directory name
     ```
 
