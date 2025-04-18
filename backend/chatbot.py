@@ -19,13 +19,19 @@ from github import Github
 from git import Repo
 import numpy as np
 
-# Try to import SentenceTransformer, but make it optional
+# Import BM25Okapi if SentenceTransformer is not available
 try:
     from sentence_transformers import SentenceTransformer
     HAVE_SENTENCE_TRANSFORMER = True
 except ImportError:
     HAVE_SENTENCE_TRANSFORMER = False
-    logging.warning("SentenceTransformer not available. Semantic search functionality will be limited.")
+    logging.warning("SentenceTransformer not available. Semantic search functionality will use BM25 fallback.")
+    try:
+        from rank_bm25 import BM25Okapi
+        HAVE_BM25 = True
+    except ImportError:
+        HAVE_BM25 = False
+        logging.error("rank_bm25 not available. Fallback search will be very basic.")
 
 # Configure logging
 logging.basicConfig(
@@ -36,85 +42,81 @@ logger = logging.getLogger('reposage')
 
 # Global model instance to be shared across analyzer instances
 _global_sentence_transformer = None
+_global_bm25_file_index = None
+_global_bm25_commit_index = None
+_global_bm25_file_paths = []
+_global_bm25_commit_hashes = []
 
 def get_global_sentence_transformer():
     global _global_sentence_transformer
-    if _global_sentence_transformer is None:
-        if HAVE_SENTENCE_TRANSFORMER:
-            logger.info("Initializing global sentence transformer model")
-            _global_sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2')
-        else:
-            logger.warning("SentenceTransformer not available. Using simple keyword matching instead.")
-            _global_sentence_transformer = SimpleSimilarityModel()
+    if _global_sentence_transformer is None and HAVE_SENTENCE_TRANSFORMER:
+        logger.info("Initializing global sentence transformer model")
+        _global_sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2')
     return _global_sentence_transformer
 
-# Simple fallback when SentenceTransformer is not available
-class SimpleSimilarityModel:
-    """Simple fallback when SentenceTransformer is not available"""
-    
-    def encode(self, texts, convert_to_tensor=False):
-        """Simple keyword-based encoding - just counts word frequency"""
-        if isinstance(texts, str):
-            texts = [texts]
-            
-        # Very basic word frequency vectorization
-        all_words = set()
-        for text in texts:
-            words = re.findall(r'\w+', text.lower())
-            all_words.update(words)
-            
-        word_to_idx = {word: i for i, word in enumerate(all_words)}
-        vectors = []
-        
-        for text in texts:
-            vector = [0] * len(word_to_idx)
-            words = re.findall(r'\w+', text.lower())
-            for word in words:
-                if word in word_to_idx:
-                    vector[word_to_idx[word]] += 1
-            # Normalize
-            magnitude = sum(v*v for v in vector) ** 0.5
-            if magnitude > 0:
-                vector = [v/magnitude for v in vector]
-            vectors.append(vector)
-            
-        return np.array(vectors)
-        
-    def __call__(self, texts, convert_to_tensor=False):
-        return self.encode(texts, convert_to_tensor)
+# Simple fallback when SentenceTransformer is not available - No longer needed for encode
+# class SimpleSimilarityModel: ... (Can be removed or kept if needed elsewhere)
 
 class RepoAnalyzer:
     """Analyzes repository content and history."""
     
     def __init__(self, repo_path: str):
         self.repo = Repo(repo_path)
-        self.model = get_global_sentence_transformer()  # Use shared model instance
+        self.model = get_global_sentence_transformer() # Get SentenceTransformer if available
         self.file_contents = {}
-        self.file_embeddings = {}
+        self.file_embeddings = {} # Only used if self.model is SentenceTransformer
         self.commit_history = []
+        self.commit_messages = {} # Store messages for BM25
         
+        # BM25 related attributes (used only if SentenceTransformer is not available)
+        self.bm25_file_index = None
+        self.bm25_commit_index = None
+        self.bm25_file_paths = []
+        self.bm25_commit_hashes = []
+        self.is_fallback_search = not HAVE_SENTENCE_TRANSFORMER and HAVE_BM25
+
+    def _tokenize(self, text):
+        """Simple tokenizer for BM25."""
+        return re.findall(r'\w+', text.lower())
+
     def analyze_repo(self) -> Dict[str, Any]:
         """Perform comprehensive repository analysis."""
         logger.info("Starting repository analysis")
         
-        # Use parallel processing for faster analysis
         import concurrent.futures
         
-        # First get basic info (quick operation)
         repo_info = self._get_repo_info()
         
-        # Then run heavier operations in parallel
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             future_commit_history = executor.submit(self._get_commit_history)
             future_file_structure = executor.submit(self._get_file_structure)
             
-            # Wait for all tasks to complete
             commit_history = future_commit_history.result()
             file_structure = future_file_structure.result()
-        
-        # Only run this after we have file structure
+
         important_files = self._identify_important_files()
-        
+
+        # --- BM25 Indexing (if using fallback) ---
+        if self.is_fallback_search:
+            logger.info("Building BM25 indexes for fallback search...")
+            try:
+                # File index
+                file_corpus = [self._tokenize(content) for content in self.file_contents.values()]
+                self.bm25_file_paths = list(self.file_contents.keys())
+                if file_corpus:
+                    self.bm25_file_index = BM25Okapi(file_corpus)
+                
+                # Commit index
+                commit_corpus = [self._tokenize(msg) for msg in self.commit_messages.values()]
+                self.bm25_commit_hashes = list(self.commit_messages.keys())
+                if commit_corpus:
+                    self.bm25_commit_index = BM25Okapi(commit_corpus)
+                logger.info("BM25 indexes built successfully.")
+            except Exception as e:
+                 logger.error(f"Failed to build BM25 indexes: {e}")
+                 self.is_fallback_search = False # Disable fallback if indexing fails
+        # --- End BM25 Indexing ---
+
         results = {
             "repo_info": repo_info,
             "commit_history": commit_history,
@@ -180,19 +182,21 @@ class RepoAnalyzer:
     def _get_commit_history(self, max_commits: int = 50) -> List[Dict[str, str]]:
         """Get recent commit history with important metadata."""
         commits = []
+        self.commit_messages = {} # Reset commit messages for BM25
         try:
-            # Use simple commit extraction for shallow clones
             for commit in list(self.repo.iter_commits())[:max_commits]:
-                # Initialize basic commit info
+                commit_message = commit.message.strip()
+                commit_hash = commit.hexsha
                 commit_info = {
-                    "hash": commit.hexsha,
-                    "short_hash": commit.hexsha[:7],
+                    "hash": commit_hash,
+                    "short_hash": commit_hash[:7],
                     "author": f"{commit.author.name} <{commit.author.email}>",
                     "date": datetime.fromtimestamp(commit.committed_date).isoformat(),
-                    "message": commit.message.strip(),
+                    "message": commit_message,
                     "stats": {"files_changed": 0, "insertions": 0, "deletions": 0},
                     "file_changes": []
                 }
+                self.commit_messages[commit_hash] = commit_message # Store for BM25
                 
                 try:
                     # Try to get detailed file changes
@@ -687,56 +691,138 @@ class RepoAnalyzer:
         return important_files
     
     def search_relevant_files(self, query: str, top_k: int = 5) -> List[Tuple[str, str]]:
-        """Search for files relevant to a query using embeddings."""
-        if not self.file_embeddings:
-            logger.warning("No file embeddings available for search")
-            return []
-        
-        query_embedding = self.model.encode(query)
-        
-        # Calculate similarities
-        similarities = {}
-        for file_path, embedding in self.file_embeddings.items():
-            similarity = np.dot(query_embedding, embedding) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(embedding)
-            )
-            similarities[file_path] = similarity
-        
-        # Sort by similarity
-        sorted_files = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
-        
-        # Return top_k files with their content
-        return [(file_path, self.file_contents[file_path]) 
-                for file_path, _ in sorted_files[:top_k]]
-    
-    def search_commit_history(self, query: str) -> List[Dict[str, str]]:
-        """Search commit history for relevant commits."""
+        """Search for files relevant to a query using embeddings or BM25 fallback."""
+
+        if self.is_fallback_search:
+            # --- BM25 Fallback Search ---
+            if not self.bm25_file_index or not self.bm25_file_paths:
+                logger.warning("BM25 file index not available for fallback search.")
+                return []
+            try:
+                tokenized_query = self._tokenize(query)
+                scores = self.bm25_file_index.get_scores(tokenized_query)
+                
+                # Get top_k indices and scores
+                top_indices = np.argsort(scores)[::-1][:top_k]
+                
+                # Return file paths and content for top indices
+                results = []
+                for i in top_indices:
+                     # Check if score is positive before including
+                     if scores[i] > 0:
+                         file_path = self.bm25_file_paths[i]
+                         results.append((file_path, self.file_contents[file_path]))
+                return results
+            except Exception as e:
+                logger.error(f"Error during BM25 file search: {e}")
+                return []
+            # --- End BM25 Fallback ---
+
+        else:
+            # --- Original Embedding Search ---
+            if not self.file_embeddings:
+                logger.warning("No file embeddings available for search")
+                return []
+            if not self.model:
+                 logger.error("SentenceTransformer model not loaded for embedding search.")
+                 return []
+            
+            try:
+                 query_embedding = self.model.encode(query, convert_to_tensor=False).reshape(1, -1) # Ensure 2D for dot product
+                
+                 # Calculate similarities
+                 similarities = {}
+                 for file_path, embedding in self.file_embeddings.items():
+                     if embedding is None or embedding.ndim == 0: continue # Skip if embedding failed
+                     embedding_2d = embedding.reshape(1, -1) # Ensure 2D
+                     
+                     # Ensure dimensions match for dot product
+                     if query_embedding.shape[1] != embedding_2d.shape[1]:
+                          logger.warning(f"Embedding dimension mismatch for {file_path}: Query({query_embedding.shape}) vs File({embedding_2d.shape}). Skipping.")
+                          continue
+
+                     # Use sklearn's cosine_similarity for robustness
+                     from sklearn.metrics.pairwise import cosine_similarity
+                     similarity = cosine_similarity(query_embedding, embedding_2d)[0][0]
+                     similarities[file_path] = similarity
+                
+                 # Sort by similarity
+                 sorted_files = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
+                
+                 # Return top_k files with their content
+                 return [(file_path, self.file_contents[file_path]) 
+                         for file_path, score in sorted_files[:top_k] if score > 0.1] # Add a threshold
+            except Exception as e:
+                logger.error(f"Error during embedding file search: {e}")
+                return []
+            # --- End Original Embedding Search ---
+
+    def search_commit_history(self, query: str, top_k: int = 5) -> List[Dict[str, str]]:
+        """Search commit history for relevant commits using embeddings or BM25 fallback."""
         if not self.commit_history:
             logger.warning("No commit history available for search")
             return []
-        
-        # Convert query to embedding
-        query_embedding = self.model.encode(query)
-        
-        # Generate embeddings for commit messages
-        commit_embeddings = {}
-        for commit in self.commit_history:
-            commit_embeddings[commit["hash"]] = self.model.encode(commit["message"])
-        
-        # Calculate similarities
-        similarities = {}
-        for commit_hash, embedding in commit_embeddings.items():
-            similarity = np.dot(query_embedding, embedding) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(embedding)
-            )
-            similarities[commit_hash] = similarity
-        
-        # Sort by similarity and return top 5
-        sorted_commits = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:5]
-        
-        # Return commit information
-        return [commit for commit in self.commit_history 
-                if commit["hash"] in [hash for hash, _ in sorted_commits]]
+
+        if self.is_fallback_search:
+            # --- BM25 Fallback Search ---
+            if not self.bm25_commit_index or not self.bm25_commit_hashes:
+                 logger.warning("BM25 commit index not available for fallback search.")
+                 return []
+            try:
+                 tokenized_query = self._tokenize(query)
+                 scores = self.bm25_commit_index.get_scores(tokenized_query)
+
+                 top_indices = np.argsort(scores)[::-1][:top_k]
+                 
+                 top_hashes = set()
+                 for i in top_indices:
+                      if scores[i] > 0: # Only include if score is positive
+                           top_hashes.add(self.bm25_commit_hashes[i])
+
+                 return [commit for commit in self.commit_history if commit["hash"] in top_hashes]
+            except Exception as e:
+                 logger.error(f"Error during BM25 commit search: {e}")
+                 return []
+            # --- End BM25 Fallback ---
+            
+        else:
+            # --- Original Embedding Search ---
+            if not self.model:
+                 logger.error("SentenceTransformer model not loaded for embedding search.")
+                 return []
+            
+            try:
+                 query_embedding = self.model.encode(query, convert_to_tensor=False).reshape(1, -1)
+                 
+                 commit_embeddings = {}
+                 for commit in self.commit_history:
+                     try:
+                         # Use cached messages if available, otherwise encode on the fly (less efficient)
+                         msg_embedding = self.model.encode(commit["message"], convert_to_tensor=False).reshape(1, -1)
+                         if query_embedding.shape[1] == msg_embedding.shape[1]:
+                              commit_embeddings[commit["hash"]] = msg_embedding
+                         else:
+                              logger.warning(f"Embedding dimension mismatch for commit {commit['short_hash']}: Query({query_embedding.shape}) vs Commit({msg_embedding.shape}). Skipping.")
+                     except Exception as e:
+                          logger.warning(f"Could not generate embedding for commit {commit['short_hash']}: {e}")
+
+                 # Calculate similarities
+                 similarities = {}
+                 from sklearn.metrics.pairwise import cosine_similarity
+                 for commit_hash, embedding in commit_embeddings.items():
+                     similarity = cosine_similarity(query_embedding, embedding)[0][0]
+                     similarities[commit_hash] = similarity
+                 
+                 # Sort by similarity and return top_k
+                 sorted_commits = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_k]
+                 
+                 # Return commit information
+                 top_hashes = set(hash for hash, score in sorted_commits if score > 0.1) # Add threshold
+                 return [commit for commit in self.commit_history if commit["hash"] in top_hashes]
+            except Exception as e:
+                 logger.error(f"Error during embedding commit search: {e}")
+                 return []
+            # --- End Original Embedding Search ---
 
 
 class GeminiClient:

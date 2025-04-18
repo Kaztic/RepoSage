@@ -243,7 +243,7 @@ app = FastAPI(
 )
 
 # Add CORS middleware
-frontend_url = os.getenv("FRONTEND_URL", "https://reposage.vercel.app")
+frontend_url = os.getenv("FRONTEND_URL", "https://repo-sage-orpin.vercel.app")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Use environment variable for Vercel frontend URL
