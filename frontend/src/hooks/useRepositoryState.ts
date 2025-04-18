@@ -726,6 +726,33 @@ export default function useRepositoryState() {
         // Remove the temporary message
         setMessages((prev: ChatMessage[]) => prev.filter(m => m.id !== tempMessageId));
         
+        // *** START: Update commitHistory state with detailed commit ***
+        setCommitHistory(prevHistory => {
+          const existingIndex = prevHistory.findIndex(c => c.hash === commit.hash);
+          if (existingIndex !== -1) {
+            // Replace existing basic commit info with detailed info
+            const updatedHistory = [...prevHistory];
+            updatedHistory[existingIndex] = {
+              ...updatedHistory[existingIndex], // Keep any existing UI state if needed
+              ...commit // Overwrite with new detailed data
+            };
+            return updatedHistory;
+          } else {
+            // Add the new detailed commit if not found
+            // Ensure file_changes have default UI state if needed
+            const detailedCommit = {
+              ...commit,
+              file_changes: commit.file_changes?.map((fc: any) => ({ 
+                ...fc, 
+                loading: false, 
+                showDiff: false 
+              })) || []
+            };
+            return [...prevHistory, detailedCommit];
+          }
+        });
+        // *** END: Update commitHistory state with detailed commit ***
+        
         // Format commit details for chat
         const fileNote = commit.stats.note ? `\n\n*Note: ${commit.stats.note}*` : '';
         const commitDetails = `**Commit ${commit.short_hash}** (${commit.hash})
@@ -796,6 +823,32 @@ ${commit.file_changes && commit.file_changes.length > 0
           if (githubData.status === 'success') {
             const commit = githubData.commit;
             
+            // *** START: Update commitHistory state with detailed commit from GitHub API ***
+            setCommitHistory(prevHistory => {
+              const existingIndex = prevHistory.findIndex(c => c.hash === commit.hash);
+              if (existingIndex !== -1) {
+                // Replace existing basic commit info with detailed info
+                const updatedHistory = [...prevHistory];
+                updatedHistory[existingIndex] = {
+                  ...updatedHistory[existingIndex], // Keep existing UI state
+                  ...commit // Overwrite with new detailed data
+                };
+                return updatedHistory;
+              } else {
+                // Add the new detailed commit if not found
+                const detailedCommit = {
+                  ...commit,
+                  file_changes: commit.file_changes?.map((fc: any) => ({ 
+                    ...fc, 
+                    loading: false, 
+                    showDiff: false 
+                  })) || []
+                };
+                return [...prevHistory, detailedCommit];
+              }
+            });
+            // *** END: Update commitHistory state with detailed commit from GitHub API ***
+
             // Format commit details for chat
             const fileNote = commit.stats.note ? `\n\n*Note: ${commit.stats.note}*` : '';
             const commitDetails = `**Commit ${commit.short_hash}** (${commit.hash})
