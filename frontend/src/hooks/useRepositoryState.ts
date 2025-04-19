@@ -367,6 +367,28 @@ export default function useRepositoryState() {
     }
     
     try {
+      // Check if this message contains what looks like a commit hash
+      const commitHashRegex = /\b[a-f0-9]{7,40}\b/gi; 
+      const potentialHashes: RegExpMatchArray | null = userMessage.content.match(commitHashRegex);
+      
+      if (potentialHashes && potentialHashes.length > 0) {
+        console.log('Found potential commit hash in user message:', potentialHashes[0]);
+        
+        // Check if this looks like a commit hash query
+        if (userMessage.content.toLowerCase().includes('commit') || 
+            userMessage.content.toLowerCase().includes('changes') ||
+            userMessage.content.toLowerCase().includes('what') ||
+            userMessage.content.toLowerCase().includes('show')) {
+          
+          // Extract the first potential hash
+          const firstHash = potentialHashes[0];
+          
+          // Look up the commit before sending to the AI
+          console.log(`Pre-fetching commit ${firstHash} before sending to AI`);
+          await lookupCommitByHash(firstHash);
+        }
+      }
+    
       // Call the API with the selected Gemini model
       const response = await apiService.sendChatMessageToAI(
         repoUrl, 
@@ -389,13 +411,18 @@ export default function useRepositoryState() {
       ]);
 
       // *** START: Check for commit hashes in the response ***
-      const potentialHashes = assistantContent.match(/\b[a-f0-9]{7,40}\b/gi);
-      if (potentialHashes && potentialHashes.length > 0) {
-        console.log('Found potential commit hashes in response:', potentialHashes);
+      const responseHashes: RegExpMatchArray | null = assistantContent.match(/\b[a-f0-9]{7,40}\b/gi);
+      if (responseHashes && responseHashes.length > 0) {
+        console.log('Found potential commit hashes in response:', responseHashes);
+        
+        // Deduplicate hashes
+        const uniqueHashes: string[] = [...new Set(responseHashes)];
+        console.log('Unique commit hashes in response:', uniqueHashes);
+        
         const knownHashes = new Set(commitHistory.map(c => c.hash));
         const knownShortHashes = new Set(commitHistory.map(c => c.short_hash));
         
-        potentialHashes.forEach(hash => {
+        uniqueHashes.forEach((hash: string) => {
           // Normalize to full length for comparison if it's short
           const isShort = hash.length < 40;
           
@@ -406,6 +433,8 @@ export default function useRepositoryState() {
             console.log(`Commit hash ${hash} not found in local history. Fetching details...`);
             // Call lookupCommitByHash without await, let it run in background
             lookupCommitByHash(hash);
+          } else {
+            console.log(`Commit hash ${hash} already exists in history, skipping fetch`);
           }
         });
       }

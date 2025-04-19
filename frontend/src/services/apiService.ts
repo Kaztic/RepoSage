@@ -85,70 +85,136 @@ export const fetchFullCommitHistory = async (repoUrl: string, accessToken?: stri
 };
 
 export const fetchCommitByHash = async (
-  repoUrl: string, 
-  commitHash: string, 
-  accessToken?: string
-) => {
+  repoUrl: string,
+  commitHash: string,
+  token?: string
+): Promise<any> => {
   try {
-    const credentials = await getStoredCredentials();
-    const token = accessToken || credentials.githubToken || undefined;
+    const apiBaseUrl = API_BASE_URL;
+    console.log(`[GitHub API] Fetching commit ${commitHash} from repo ${repoUrl}`);
+    console.log(`[GitHub API] Token present: ${!!token}`);
+    console.log(`[GitHub API] Timestamp: ${new Date().toISOString()}`);
+    console.log(`[GitHub API] API URL: ${apiBaseUrl}/api/commit-by-hash`);
     
-    // Use a longer timeout for potentially large commits
-    const response = await axios.post(
-      `${API_BASE_URL}/api/commit-by-hash`, 
-      {
-        repo_url: repoUrl,
-        commit_hash: commitHash,
-        access_token: token,
-      },
-      {
-        timeout: 120000, // 120 second timeout for large commits
-        headers: {
-          'Content-Type': 'application/json'
+    // Attempt fetch with exponential backoff retry
+    let retryCount = 0;
+    const maxRetries = 3;
+    const initialDelay = 1000; // 1 second
+    
+    const fetchWithRetry = async (): Promise<any> => {
+      try {
+        console.log(`[GitHub API] Sending request for commit ${commitHash}, attempt: ${retryCount + 1}`);
+        
+        const requestBody = {
+          repo_url: repoUrl,
+          commit_hash: commitHash,
+          access_token: token,
+        };
+        console.log(`[GitHub API] Request payload:`, {
+          repo_url: repoUrl,
+          commit_hash: commitHash,
+          access_token: token ? "[HIDDEN]" : undefined,
+        });
+        
+        const response = await fetch(`${apiBaseUrl}/api/commit-by-hash`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(240 * 1000), // 4 minute timeout for large commits
+        });
+        
+        console.log(`[GitHub API] Response status: ${response.status}`);
+        
+        if (response.status === 429) { // Rate limit exceeded
+          const retryAfter = parseInt(response.headers.get('Retry-After') || '60', 10);
+          console.log(`[GitHub API] Rate limited. Retry-After: ${retryAfter}s`);
+          
+          if (retryCount < maxRetries) {
+            const delay = retryAfter * 1000 || Math.min(2 ** retryCount * initialDelay, 60000);
+            retryCount++;
+            console.log(`[GitHub API] Retrying after ${delay/1000}s (attempt ${retryCount}/${maxRetries})`);
+            
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return fetchWithRetry();
+          }
         }
+        
+        const data = await response.json();
+        console.log('[GitHub API] Response data:', data);
+        
+        if (data.diagnostic) {
+          console.log('[GitHub API] Diagnostic info:', data.diagnostic);
+        }
+        
+        if (!response.ok) {
+          console.warn(`[GitHub API] Error response:`, data);
+          
+          if (data.error?.includes('API rate limit exceeded') && retryCount < maxRetries) {
+            const delay = Math.min(2 ** retryCount * initialDelay, 60000);
+            retryCount++;
+            console.log(`[GitHub API] Rate limited. Retrying after ${delay/1000}s (attempt ${retryCount}/${maxRetries})`);
+            
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return fetchWithRetry();
+          }
+          
+          // Check for common Git errors
+          if (data.error) {
+            if (data.error.includes('not found') || data.error.includes('does not exist')) {
+              console.error(`[GitHub API] Git object not found: ${commitHash}`);
+            } else if (data.error.includes('authentication')) {
+              console.error(`[GitHub API] Authentication error for repo ${repoUrl}`);
+            } else if (data.error.includes('timeout')) {
+              console.error(`[GitHub API] Request timed out for commit ${commitHash}`);
+            }
+          }
+          
+          // Return as is - error handling will be in the UI
+          return data;
+        }
+        
+        console.log(`[GitHub API] Successfully fetched commit ${commitHash}`);
+        return data;
+      } catch (err) {
+        // Handle network errors with retries
+        if (err instanceof Error) {
+          console.error(`[GitHub API] Fetch error:`, err.message);
+          console.error(`[GitHub API] Fetch error stack:`, err.stack);
+          
+          if ((err.name === 'AbortError' || err.message.includes('network') || 
+               err.message.includes('failed') || err.message.includes('abort')) && 
+              retryCount < maxRetries) {
+            const delay = Math.min(2 ** retryCount * initialDelay, 60000);
+            retryCount++;
+            console.log(`[GitHub API] Network error. Retrying after ${delay/1000}s (attempt ${retryCount}/${maxRetries})`);
+            
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return fetchWithRetry();
+          }
+        }
+        throw err; // Re-throw if can't handle
       }
-    );
+    };
     
-    // Ensure we got a valid response
-    if (response.data && response.status === 200) {
-      return response.data;
-    } else {
-      return {
-        status: 'error',
-        message: 'Invalid response received from server'
-      };
-    }
+    return await fetchWithRetry();
   } catch (error) {
-    console.error("Error fetching commit by hash:", error);
+    console.error('[GitHub API] Error in fetchCommitByHash:', error);
+    console.error('[GitHub API] Error details:', error instanceof Error ? {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    } : 'Unknown error type');
     
-    // Handle timeout errors specifically
-    if (axios.isAxiosError(error) && error.code === 'ECONNABORTED') {
-      return {
-        status: 'error',
-        message: 'Request timed out. This commit might be very large or complex to process.'
-      };
-    }
-    
-    // Handle network errors
-    if (axios.isAxiosError(error) && !error.response) {
-      return {
-        status: 'error',
-        message: 'Network error. Please check your connection and try again.'
-      };
-    }
-    
-    // Handle server errors
-    if (axios.isAxiosError(error) && error.response) {
-      return {
-        status: 'error',
-        message: `Server error: ${error.response.status} - ${error.response.data?.message || 'Unknown error'}`
-      };
-    }
-    
-    // Return structured error for any other case
     return {
       status: 'error',
-      message: error instanceof Error ? error.message : 'Unknown error occurred'
+      message: error instanceof Error ? error.message : 'Failed to fetch commit details',
+      error_details: error instanceof Error ? {
+        name: error.name,
+        message: error.message,
+        stack: error.stack
+      } : null
     };
   }
 };

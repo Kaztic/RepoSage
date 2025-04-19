@@ -236,7 +236,7 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure more specifically in production
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "*"],  # Explicit origins first, then wildcard
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -300,9 +300,19 @@ async def fetch_and_analyze_repo(repo_url: str, access_token: Optional[str] = No
         
         # Generate a unique path based on repo name and a timestamp to prevent conflicts
         unique_id = f"{int(datetime.now().timestamp())}"
-        repo_path = f"/tmp/reposage_{repo_name}_{unique_id}"
+        
+        # Use a platform-independent path in the temp directory
+        repo_path = os.path.join(tempfile.gettempdir(), f"reposage_{repo_name}_{unique_id}")
         
         logger.info(f"Fetching repository {repo_url} to {repo_path}")
+        
+        # Create directory with error handling
+        try:
+            os.makedirs(repo_path, exist_ok=True)
+            logger.info(f"Created directory: {repo_path}")
+        except Exception as e:
+            logger.error(f"Error creating directory {repo_path}: {e}")
+            raise HTTPException(status_code=500, detail=f"Error creating temporary directory: {str(e)}")
         
         # Clone repository
         clone_url = repo_url
@@ -310,14 +320,34 @@ async def fetch_and_analyze_repo(repo_url: str, access_token: Optional[str] = No
             # Add token to URL for private repos
             clone_url = clone_url.replace('https://', f'https://{access_token}@')
         
-        # Clone without depth limitation for better commit history access
-        logger.info(f"Cloning repository {repo_url} to {repo_path}")
-        Repo.clone_from(clone_url, repo_path)
-        logger.info(f"Repository cloned to {repo_path}")
+        # Clone with better error handling
+        try:
+            # Clone without depth limitation for better commit history access
+            logger.info(f"Cloning repository {repo_url} to {repo_path}")
+            # Add git environment variables to prevent interactive prompts
+            Repo.clone_from(clone_url, repo_path, env={"GIT_TERMINAL_PROMPT": "0"})
+            logger.info(f"Repository cloned to {repo_path}")
+        except GitCommandError as e:
+            logger.error(f"Git command error during clone: {e}")
+            # Check for common git errors
+            error_msg = str(e)
+            if "not found" in error_msg.lower() or "404" in error_msg:
+                raise HTTPException(status_code=404, detail=f"Repository not found: {repo_url}")
+            elif "authentication" in error_msg.lower() or "403" in error_msg:
+                raise HTTPException(status_code=403, detail="Authentication failed. Check your access token.")
+            else:
+                raise HTTPException(status_code=500, detail=f"Git error during clone: {str(e)}")
         
         # Initialize and run analysis on the cloned repo
-        analyzer = RepoAnalyzer(repo_path)
-        analysis = analyzer.analyze_repo()
+        try:
+            logger.info(f"Initializing RepoAnalyzer for {repo_path}")
+            analyzer = RepoAnalyzer(repo_path)
+            logger.info(f"Running analysis on {repo_path}")
+            analysis = analyzer.analyze_repo()
+            logger.info(f"Analysis completed for {repo_path}")
+        except Exception as e:
+            logger.error(f"Error during repository analysis: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Error analyzing repository: {str(e)}")
         
         # Store in cache with the unique path
         repo_cache[repo_url] = {
@@ -336,7 +366,7 @@ async def fetch_and_analyze_repo(repo_url: str, access_token: Optional[str] = No
         # Re-raise already formatted HTTP exceptions
         raise
     except Exception as e:
-        logger.error(f"Error during repository fetch and analysis: {e}")
+        logger.error(f"Error during repository fetch and analysis: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error analyzing repository: {str(e)}")
 
 @app.get("/")
@@ -347,56 +377,71 @@ async def read_root():
 @app.post("/api/repo-structure")
 async def get_repo_structure(repo_request: RepoRequest, background_tasks: BackgroundTasks):
     """Get repository structure."""
-    repo_url = repo_request.repo_url
-    access_token = repo_request.access_token
-    
-    # Check cache first
-    if repo_url in repo_cache:
-        # Return cached data if available and recent enough (add staleness check if needed)
-        analysis = repo_cache[repo_url]["analysis"]
-        return {
-            "status": "success", 
-            "repo_info": analysis["repo_info"],
-            "file_structure": analysis["file_structure"],
-            "important_files": analysis["important_files"]
-        }
-
-    # If not cached, proceed with validation and fetching
     try:
-        # Validate the repository URL first
-        # Consider if validate_git_repo is still necessary if fetch_and_analyze handles errors
-        validation_result = await validate_git_repo(repo_url, access_token)
-        if not validation_result["valid"]:
-            # It's better to let fetch_and_analyze_repo handle the clone error
-            # directly for consistency, but keep validation for quick checks if desired.
-            # If keeping validation, ensure its error messages are distinct.
-             raise HTTPException(
-                 status_code=400, # Use 400 for bad input
-                 detail=f"Invalid or inaccessible repository: {validation_result.get('reason', 'Unknown reason')}"
-             )
-
-        # *** CHANGE: Await the fetch and analysis directly ***
-        # This will block until cloning/analysis is done or fails
-        analysis = await fetch_and_analyze_repo(repo_url, access_token)
+        repo_url = repo_request.repo_url
+        access_token = repo_request.access_token
         
-        # If successful, return the structure
-        return {
-            "status": "success", 
-            "repo_info": analysis["repo_info"],
-            "file_structure": analysis["file_structure"],
-            "important_files": analysis["important_files"]
-        }
+        logger.info(f"Received request for repo structure: {repo_url}")
+        
+        # Check cache first
+        if repo_url in repo_cache:
+            logger.info(f"Found repo {repo_url} in cache, validating...")
+            
+            if validate_repo_cache(repo_url):
+                # Cache is valid, return the data
+                logger.info(f"Cache for {repo_url} is valid, returning cached data")
+                analysis = repo_cache[repo_url]["analysis"]
+                return {
+                    "status": "success", 
+                    "repo_info": analysis["repo_info"],
+                    "file_structure": analysis["file_structure"],
+                    "important_files": analysis["important_files"]
+                }
+            else:
+                # Cache is invalid, remove it and continue to re-fetch
+                logger.warning(f"Cache for {repo_url} is invalid, removing from cache")
+                del repo_cache[repo_url]
 
-    except HTTPException as e:
-        # Re-raise HTTPExceptions (like the one from fetch_and_analyze_repo or validation)
-        raise e
+        # If not cached or cache was invalid, proceed with validation and fetching
+        try:
+            # Validate the repository URL first
+            logger.info(f"Validating repository URL: {repo_url}")
+            validation_result = await validate_git_repo(repo_url, access_token)
+            if not validation_result["valid"]:
+                logger.error(f"Invalid repository: {validation_result.get('reason', 'Unknown reason')}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid or inaccessible repository: {validation_result.get('reason', 'Unknown reason')}"
+                )
+
+            # Await the fetch and analysis directly
+            logger.info(f"Starting repository fetch and analysis for: {repo_url}")
+            analysis = await fetch_and_analyze_repo(repo_url, access_token)
+            logger.info(f"Completed repository fetch and analysis for: {repo_url}")
+            
+            # If successful, return the structure
+            return {
+                "status": "success", 
+                "repo_info": analysis["repo_info"],
+                "file_structure": analysis["file_structure"],
+                "important_files": analysis["important_files"]
+            }
+
+        except HTTPException as e:
+            # Re-raise HTTPExceptions with clear logging
+            logger.error(f"HTTP exception in get_repo_structure: {e.detail}, status: {e.status_code}")
+            raise e
     except Exception as e:
         # Catch any other unexpected errors during the process
-        logger.error(f"Unexpected error in get_repo_structure for {repo_url}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred while processing the repository.")
-
-    # Removed the old background task logic and "processing" response.
-    # Removed the final cache check as it's handled at the beginning now.
+        logger.error(f"Unexpected error in get_repo_structure for {repo_request.repo_url}: {e}", exc_info=True)
+        # Return a proper JSON response instead of raising an exception
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"An unexpected error occurred while processing the repository: {str(e)}"
+            }
+        )
 
 @app.post("/api/commits")
 async def get_commit_history(repo_request: RepoRequest):
@@ -404,8 +449,15 @@ async def get_commit_history(repo_request: RepoRequest):
     repo_url = repo_request.repo_url
     access_token = repo_request.access_token
     
-    # Check if repo is already cached
-    if repo_url not in repo_cache:
+    # Check if repo is already cached and validate it
+    if repo_url in repo_cache:
+        # Validate the cache first
+        if not validate_repo_cache(repo_url):
+            logger.warning(f"Cached repo {repo_url} is invalid for commit history, re-fetching")
+            # Cache is invalid, remove and re-fetch
+            del repo_cache[repo_url]
+            await fetch_and_analyze_repo(repo_url, access_token)
+    else:
         # Analyze repo if not cached (will be a blocking operation here)
         await fetch_and_analyze_repo(repo_url, access_token)
     
@@ -852,148 +904,166 @@ async def calculate_technical_debt(request: Dict[str, Any] = Body(...)):
 
 @app.post("/api/file-content-at-commit")
 async def get_file_content_at_commit(request: Dict[str, str] = Body(...)):
-    """Get file content at a specific commit."""
+    """
+    Get the content of a file at a specific commit.
+    """
     repo_url = request.get("repo_url")
-    file_path = request.get("file_path") 
     commit_hash = request.get("commit_hash")
+    file_path = request.get("file_path")
     access_token = request.get("access_token")
     
-    if not repo_url or not file_path or not commit_hash:
-        raise HTTPException(status_code=400, detail="repo_url, file_path, and commit_hash are required")
+    if not repo_url or not commit_hash or not file_path:
+        raise HTTPException(
+            status_code=400, 
+            detail="Repository URL, commit hash, and file path are required"
+        )
     
+    # Check if repo is already in cache and validate
+    if repo_url in repo_cache:
+        if not validate_repo_cache(repo_url):
+            logger.warning(f"Cached repo {repo_url} is invalid for file content at commit, re-fetching")
+            # Cache is invalid, remove it
+            del repo_cache[repo_url]
+            # Continue with re-fetching
+        else:
+            try:
+                # Use the cached analyzer
+                repo_analyzer = repo_cache[repo_url]["analyzer"]
+                repo = repo_analyzer.repo
+                
+                # Try to get the file at the specific commit
+                commit = repo.commit(commit_hash)
+                content = None
+                
+                try:
+                    # Get the blob from the commit tree
+                    blob = commit.tree / file_path
+                    
+                    # Check if it's a binary file
+                    if blob.data_stream.read(1024).find(b'\x00') != -1:
+                        content = "[Binary content]"
+                    else:
+                        # Reset stream position and read full content
+                        blob.data_stream.close()
+                        content = blob.data_stream.read().decode('utf-8', errors='replace')
+                    
+                    return {
+                        "status": "success",
+                        "content": content
+                    }
+                except KeyError:
+                    # File doesn't exist in this commit
+                    return {
+                        "status": "error",
+                        "message": f"File {file_path} does not exist in commit {commit_hash}"
+                    }
+                except UnicodeDecodeError:
+                    # Binary file
+                    return {
+                        "status": "success",
+                        "content": "[Binary content]"
+                    }
+                except Exception as e:
+                    logger.error(f"Error retrieving file at commit: {e}")
+                    return {
+                        "status": "error",
+                        "message": f"Error retrieving file: {str(e)}"
+                    }
+            except Exception as e:
+                logger.error(f"Error with cached repo: {e}")
+                # If there's an error with the cached repo, remove it and continue
+                del repo_cache[repo_url]
+    
+    # If we get here, we need to fetch the repo
     try:
-        # Check if repo is already cached
-        if repo_url not in repo_cache:
-            # Analyze repo if not cached (will be a blocking operation here)
-            await fetch_and_analyze_repo(repo_url, access_token)
+        # Analyze the repo first
+        await fetch_and_analyze_repo(repo_url, access_token)
         
-        repo_dir = repo_cache[repo_url]["path"]
+        # Use the analyzer from cache
+        repo_analyzer = repo_cache[repo_url]["analyzer"]
+        repo = repo_analyzer.repo
         
-        # Initialize git repo
-        repo = Repo(repo_dir)
+        # Try to get the file at the specific commit
+        commit = repo.commit(commit_hash)
+        content = None
         
         try:
-            # Try to get the commit - if not found, try to fetch it
-            try:
-                commit = repo.commit(commit_hash)
-            except Exception:
-                # If commit isn't found, try to fetch it specifically
-                logger.info(f"Commit {commit_hash} not found for file retrieval, attempting to fetch it")
-                try:
-                    with repo.git.custom_environment(GIT_TERMINAL_PROMPT="0"):
-                        repo.git.fetch("origin", commit_hash)
-                    # Now try to get the commit again
-                    commit = repo.commit(commit_hash)
-                except Exception as e:
-                    return {
-                        "status": "error", 
-                        "message": f"Could not fetch commit {commit_hash}: {str(e)}"
-                    }
+            # Get the blob from the commit tree
+            blob = commit.tree / file_path
             
-            # Get the content of the file at that commit
-            try:
-                content = commit.tree[file_path].data_stream.read().decode('utf-8', errors='replace')
-                
-                return {
-                    "status": "success",
-                    "file_path": file_path,
-                    "commit_hash": commit_hash,
-                    "content": content
-                }
-            except KeyError:
-                # File might not exist at this commit
-                return {
-                    "status": "error", 
-                    "message": f"File {file_path} not found in commit {commit_hash}"
-                }
-            except Exception as e:
-                logger.error(f"Error accessing file at commit: {e}", exc_info=True)
-                return {"status": "error", "message": str(e)}
-                
-        except Exception as e:
-            logger.error(f"Error accessing file at commit: {e}", exc_info=True)
-            return {"status": "error", "message": str(e)}
+            # Check if it's a binary file
+            if blob.data_stream.read(1024).find(b'\x00') != -1:
+                content = "[Binary content]"
+            else:
+                # Reset stream position and read full content
+                blob.data_stream.close()
+                content = blob.data_stream.read().decode('utf-8', errors='replace')
             
+            return {
+                "status": "success",
+                "content": content
+            }
+        except KeyError:
+            # File doesn't exist in this commit
+            return {
+                "status": "error",
+                "message": f"File {file_path} does not exist in commit {commit_hash}"
+            }
+        except UnicodeDecodeError:
+            # Binary file
+            return {
+                "status": "success",
+                "content": "[Binary content]"
+            }
     except Exception as e:
-        logger.error(f"Error getting file content at commit: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+        logger.error(f"Error retrieving file at commit: {e}")
+        return {
+            "status": "error",
+            "message": f"Error retrieving file: {str(e)}"
+        }
 
 @app.post("/api/commit-by-hash")
 async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
-    """
-    Get detailed information about a specific commit by its hash.
-    """
+    """Get details for a specific commit by hash."""
     repo_url = request.get("repo_url")
     commit_hash = request.get("commit_hash")
     access_token = request.get("access_token")
     
-    # Clean the commit hash - handle spaces and multiple hashes
-    if commit_hash:
-        # Take only the first segment if multiple are provided (split by spaces)
-        commit_hash = commit_hash.split()[0].strip()
-    
-    logger.info(f"Looking up commit by hash: {commit_hash} for repo: {repo_url}")
-    
     if not repo_url or not commit_hash:
-        raise HTTPException(status_code=400, detail="Repository URL and commit hash are required")
+        raise HTTPException(status_code=400, 
+                           detail="Repository URL and commit hash are required")
     
-    # Create a background task for long-running operations
+    # Check if we have a valid cache for this repo
+    if repo_url in repo_cache:
+        if not validate_repo_cache(repo_url):
+            logger.warning(f"Cached repo {repo_url} is invalid for commit lookup, re-fetching")
+            # Cache is invalid, remove it
+            del repo_cache[repo_url]
+            # Will continue to re-fetch below
+    
+    # Function to fetch commit info with timeout handling
     async def fetch_commit_info():
         try:
-            # Check if we already have this repo in cache
-            if repo_url in repo_cache:
-                repo_analyzer = repo_cache[repo_url]["analyzer"]
-                logger.info(f"Found repo in cache: {repo_url}")
-            else:
-                logger.info(f"Repo not in cache, cloning: {repo_url}")
-                # Clone and analyze if needed
-                try:
-                    clone_dir = os.path.join(tempfile.gettempdir(), f"reposage_{uuid.uuid4().hex}")
-                    os.makedirs(clone_dir, exist_ok=True)
-                    
-                    # Clone the repository
-                    if access_token:
-                        parsed_url = repo_url.strip('/')
-                        if parsed_url.startswith('https://github.com/'):
-                            auth_url = f"https://{access_token}@github.com/{'/'.join(parsed_url.split('/')[3:])}"
-                        else:
-                            auth_url = repo_url  # Not a GitHub URL or unexpected format
-                    else:
-                        auth_url = repo_url
-                        
-                    logger.info(f"Cloning repository: {repo_url} to {clone_dir}")
-                    repo = Repo.clone_from(auth_url, clone_dir, depth=200)  # Use depth to speed up clone
-                    
-                    # Create analyzer
-                    repo_analyzer = RepoAnalyzer(clone_dir)
-                    
-                    # Cache for future use
-                    repo_cache[repo_url] = {
-                        "analyzer": repo_analyzer,
-                        "path": clone_dir,
-                        "timestamp": datetime.now()
-                    }
-                except Exception as e:
-                    logger.error(f"Error cloning or analyzing repository: {e}")
-                    return {
-                        "status": "error",
-                        "message": f"Error processing repository: {str(e)}"
-                    }
+            # Check if repo exists in cache, if not fetch it
+            if repo_url not in repo_cache:
+                logger.info(f"Repository {repo_url} not in cache, fetching for commit lookup")
+                await fetch_and_analyze_repo(repo_url, access_token)
             
-            # Get the commit details
-            logger.info(f"Getting commit details for hash: {commit_hash}")
+            # Get the analyzer from cache
+            analyzer = repo_cache[repo_url]["analyzer"]
             
-            # Use asyncio.wait_for to set a timeout
-            commit_info = repo_analyzer.get_commit_by_hash(commit_hash)
+            # Get commit info using the analyzer
+            logger.info(f"Looking up commit {commit_hash} in {repo_url}")
+            commit_info = analyzer.get_commit_by_hash(commit_hash)
             
             if not commit_info:
-                logger.warning(f"Commit {commit_hash} not found")
+                logger.warning(f"Commit {commit_hash} not found in {repo_url}")
                 return {
                     "status": "error",
-                    "message": f"Commit {commit_hash} not found. Please check the hash and try again."
+                    "message": "Commit not found. The provided hash does not match any commit in this repository."
                 }
             
-            logger.info(f"Successfully retrieved commit: {commit_info.get('short_hash')}")
+            logger.info(f"Successfully retrieved commit {commit_hash} from {repo_url}")
             return {
                 "status": "success",
                 "commit": commit_info
@@ -1005,10 +1075,10 @@ async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
                 "message": f"Error retrieving commit: {str(e)}"
             }
     
-    # Execute the background task with a timeout
+    # Use a timeout to prevent long-running operations
+    timeout_seconds = 240  # Allow longer timeout for large commits or slow connections
     try:
-        # Use a higher timeout for commit lookup
-        timeout_seconds = 30
+        logger.info(f"Starting commit lookup with {timeout_seconds}s timeout")
         result = await asyncio.wait_for(fetch_commit_info(), timeout=timeout_seconds)
         return result
     except asyncio.TimeoutError:
@@ -1034,43 +1104,35 @@ async def get_file_diff(request: Dict[str, str] = Body(...)):
     
     # Check if we already have this repo in cache
     if repo_url in repo_cache:
+        # Validate the cache first
+        if not validate_repo_cache(repo_url):
+            logger.warning(f"Cached repo {repo_url} is invalid for file diff, re-fetching")
+            # Cache is invalid, remove it
+            del repo_cache[repo_url]
+            # Continue to re-fetching below
+        else:
+            logger.info(f"Found valid repo {repo_url} in cache for file diff")
+            repo_analyzer = repo_cache[repo_url]["analyzer"]
+            # Get the file diff using the analyzer
+            diff_text = repo_analyzer.get_file_diff(commit_hash, file_path)
+            return {"diff": diff_text}
+    
+    # If not in cache or cache is invalid, clone and analyze
+    try:
+        logger.info(f"Repo {repo_url} not in cache or cache invalid, analyzing for file diff")
+        # Analyze repo first
+        await fetch_and_analyze_repo(repo_url, access_token)
+        
+        # Get the analyzer from cache
         repo_analyzer = repo_cache[repo_url]["analyzer"]
-    else:
-        # Clone and analyze if needed
-        try:
-            clone_dir = os.path.join(tempfile.gettempdir(), f"reposage_{uuid.uuid4().hex}")
-            os.makedirs(clone_dir, exist_ok=True)
-            
-            # Clone the repository
-            if access_token:
-                parsed_url = repo_url.strip('/')
-                if parsed_url.startswith('https://github.com/'):
-                    auth_url = f"https://{access_token}@github.com/{'/'.join(parsed_url.split('/')[3:])}"
-                else:
-                    auth_url = repo_url  # Not a GitHub URL or unexpected format
-            else:
-                auth_url = repo_url
-                
-            logger.info(f"Cloning repository: {repo_url} to {clone_dir}")
-            Repo.clone_from(auth_url, clone_dir)
-            
-            # Create analyzer
-            repo_analyzer = RepoAnalyzer(clone_dir)
-            
-            # Cache for future use
-            repo_cache[repo_url] = {
-                "analyzer": repo_analyzer,
-                "clone_dir": clone_dir,
-                "timestamp": datetime.now()
-            }
-        except Exception as e:
-            logger.error(f"Error cloning or analyzing repository: {e}")
-            raise HTTPException(status_code=500, detail=f"Error processing repository: {str(e)}")
-    
-    # Get the file diff
-    diff_text = repo_analyzer.get_file_diff(commit_hash, file_path)
-    
-    return {"diff": diff_text}
+        
+        # Get the file diff
+        diff_text = repo_analyzer.get_file_diff(commit_hash, file_path)
+        
+        return {"diff": diff_text}
+    except Exception as e:
+        logger.error(f"Error getting file diff: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting file diff: {str(e)}")
 
 @app.post("/api/analyze-file-content")
 async def analyze_file_content(request: Dict[str, str] = Body(...)):
@@ -1877,6 +1939,40 @@ async def validate_repository(repo_request: RepoRequest):
             "valid": False,
             "reason": validation_result["reason"]
         }
+
+def validate_repo_cache(repo_url: str) -> bool:
+    """
+    Validate that a repository cache entry is valid and usable.
+    Returns True if the cache is valid, False otherwise.
+    """
+    if repo_url not in repo_cache:
+        return False
+    
+    try:
+        # Check if the repository path still exists
+        repo_path = repo_cache[repo_url]["path"]
+        if not os.path.exists(repo_path):
+            logger.warning(f"Cached repository path {repo_path} no longer exists")
+            return False
+        
+        # Check if the analyzer is still valid
+        analyzer = repo_cache[repo_url]["analyzer"]
+        if not hasattr(analyzer, 'repo') or analyzer.repo is None:
+            logger.warning(f"Analyzer for {repo_url} is invalid")
+            return False
+            
+        # Try to access repo properties to verify it's still valid
+        try:
+            # Just access a property to verify the repo is still valid
+            _ = analyzer.repo.working_dir
+            return True
+        except Exception as e:
+            logger.warning(f"Error accessing repo in cache for {repo_url}: {e}")
+            return False
+            
+    except Exception as e:
+        logger.warning(f"Error validating cache for {repo_url}: {e}")
+        return False
 
 if __name__ == "__main__":
     # Run server
