@@ -1,6 +1,32 @@
-import { useState, useRef, useEffect } from 'react';
-import { FaGithub, FaSpinner, FaFolder, FaFolderOpen, FaFile } from 'react-icons/fa';
-import { FileStructure, RepoInfo, Commit } from '../types';
+import React, { useState, useRef, useEffect } from 'react';
+import { FaGithub, FaSpinner, FaFolder, FaFolderOpen, FaFile, FaCode, FaHeart, FaCodeBranch } from 'react-icons/fa';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import type { FileStructure, RepoInfo, Commit } from '../types';
+
+// Function to extract original repo name without "reposage_" prefix
+const extractOriginalRepoName = (name: string): string => {
+  if (!name) return "Unknown Repository";
+  
+  // Check if the name has the reposage_ prefix
+  if (name.startsWith('reposage_')) {
+    name = name.substring(9); // Remove the 'reposage_' prefix
+  }
+  
+  // Handle GitHub repo paths if present
+  if (name.includes('/')) {
+    // For formats like 'owner/repo'
+    const parts = name.split('/');
+    return parts[parts.length - 1];
+  }
+  
+  // Strip .git suffix if present
+  if (name.endsWith('.git')) {
+    name = name.substring(0, name.length - 4);
+  }
+  
+  return name;
+};
 
 type SidebarProps = {
   repoInfo: RepoInfo | null;
@@ -223,7 +249,7 @@ export default function Sidebar({
                 <div className="flex items-center">
                   <FaGithub className="text-surface-300 mr-2" />
                   <h2 className="text-lg font-semibold text-surface-100 truncate">
-                    {repoInfo.name}
+                    {extractOriginalRepoName(repoInfo.name)}
                   </h2>
                 </div>
                 <div className="text-xs text-surface-400 rounded-full bg-surface-800 px-2 py-0.5 border border-surface-700">
@@ -234,17 +260,24 @@ export default function Sidebar({
                 {repoInfo.full_name}
               </div>
               {repoInfo.description && (
-                <div className="text-xs text-surface-300 mt-2 line-clamp-2">
-                  {repoInfo.description}
+                <div className="text-xs text-surface-300 mt-2 max-h-32 overflow-y-auto">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    className="prose prose-invert prose-sm max-w-none"
+                  >
+                    {repoInfo.description}
+                  </ReactMarkdown>
                 </div>
               )}
               <div className="flex space-x-2 mt-3 text-xs">
+                {/* Stars and forks temporarily hidden
                 <div className="bg-surface-800 rounded-md px-2 py-1 text-surface-300 border border-surface-700/50">
                   {repoInfo.stars} stars
                 </div>
                 <div className="bg-surface-800 rounded-md px-2 py-1 text-surface-300 border border-surface-700/50">
                   {repoInfo.forks} forks
                 </div>
+                */}
                 <div className="bg-surface-800 rounded-md px-2 py-1 text-surface-300 border border-surface-700/50">
                   {repoInfo.language}
                 </div>

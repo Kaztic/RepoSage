@@ -110,23 +110,139 @@ class RepoAnalyzer:
     
     def _get_repo_info(self) -> Dict[str, str]:
         """Extract basic repository information."""
+        # Get the repo name
+        repo_name = os.path.basename(self.repo.working_dir)
+        
+        # Try to determine the primary language if possible
+        language = "Unknown"
+        try:
+            # Look for common language indicators
+            if os.path.exists(os.path.join(self.repo.working_dir, "package.json")):
+                language = "JavaScript/TypeScript"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "go.mod")):
+                language = "Go"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "pom.xml")):
+                language = "Java"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "requirements.txt")) or \
+                 os.path.exists(os.path.join(self.repo.working_dir, "setup.py")):
+                language = "Python"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "Cargo.toml")):
+                language = "Rust"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "CMakeLists.txt")):
+                language = "C/C++"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "Gemfile")):
+                language = "Ruby"
+            
+            # If we couldn't determine from common project files, check file counts
+            if language == "Unknown":
+                file_counts = {}
+                for root, _, files in os.walk(self.repo.working_dir):
+                    for file in files:
+                        ext = os.path.splitext(file)[1].lower()
+                        if ext:
+                            file_counts[ext] = file_counts.get(ext, 0) + 1
+                
+                # Map extensions to languages
+                ext_to_lang = {
+                    ".py": "Python",
+                    ".js": "JavaScript",
+                    ".ts": "TypeScript",
+                    ".tsx": "TypeScript/React",
+                    ".jsx": "JavaScript/React",
+                    ".java": "Java",
+                    ".go": "Go",
+                    ".rs": "Rust",
+                    ".c": "C",
+                    ".cpp": "C++",
+                    ".h": "C/C++",
+                    ".rb": "Ruby",
+                    ".php": "PHP",
+                    ".cs": "C#",
+                    ".swift": "Swift"
+                }
+                
+                # Find the most common extension
+                if file_counts:
+                    most_common_ext = max(file_counts.items(), key=lambda x: x[1])[0]
+                    language = ext_to_lang.get(most_common_ext, "Unknown")
+        except Exception as e:
+            logger.warning(f"Error determining primary language: {e}")
+            language = "Unknown"
+            
+        # Extract original full name from remote URL if possible
+        full_name = ""
+        try:
+            origin_url = self.repo.git.config('--get', 'remote.origin.url')
+            if 'github.com' in origin_url:
+                # Extract owner/repo format from GitHub URL
+                if origin_url.endswith('.git'):
+                    origin_url = origin_url[:-4]  # Remove .git suffix
+                parts = origin_url.split('github.com/')
+                if len(parts) > 1:
+                    full_name = parts[1]
+        except Exception as e:
+            logger.warning(f"Error extracting full repo name: {e}")
+            
         return {
-            "name": os.path.basename(self.repo.working_dir),
+            "name": repo_name,
             "description": self._get_readme_summary(),
             "branches": [branch.name for branch in self.repo.branches],
             "default_branch": self.repo.active_branch.name,
+            "language": language,
+            "full_name": full_name
         }
     
     def _get_readme_summary(self) -> str:
-        """Extract summary from README if available."""
+        """Extract summary from README if available using Gemini."""
         readme_paths = ['README.md', 'README.rst', 'Readme.md', 'readme.md']
         for path in readme_paths:
             full_path = os.path.join(self.repo.working_dir, path)
             if os.path.exists(full_path):
-                with open(full_path, 'r', encoding='utf-8') as f:
+                with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
                     try:
                         content = f.read()
                         
+                        # If README doesn't exist or is empty, return a default message
+                        if not content.strip():
+                            return "No README content available."
+                        
+                        # Try to use Gemini to summarize the README
+                        try:
+                            # Import the Google Generative AI library
+                            import google.generativeai as genai
+                            from google.api_core.exceptions import GoogleAPIError
+                            
+                            # Get Gemini API key from environment variables
+                            api_key = os.environ.get('GEMINI_API_KEY')
+                            
+                            if api_key:
+                                # Configure the Gemini API
+                                genai.configure(api_key=api_key)
+                                
+                                # Limit content length to prevent token overflow
+                                max_content_length = 20000
+                                if len(content) > max_content_length:
+                                    content = content[:max_content_length] + "..."
+                                
+                                # Create the model and generate a summary
+                                model = genai.GenerativeModel('models/gemini-1.5-flash')
+                                prompt = f"Summarize the following README file to describe what this project does, in a simple and clear way for developers:\n\n{content}"
+                                
+                                response = model.generate_content(prompt)
+                                
+                                if response.text and response.text.strip():
+                                    return response.text.strip()
+                                
+                                # If Gemini response is empty, fall back to default processing
+                                logger.warning("Gemini returned empty summary, falling back to default processing")
+                            else:
+                                logger.warning("No Gemini API key found, falling back to default processing")
+                                
+                        except (ImportError, GoogleAPIError, Exception) as e:
+                            logger.warning(f"Error using Gemini for README summarization: {e}")
+                            # Continue with default processing if Gemini fails
+                        
+                        # Default processing (fallback if Gemini fails)
                         # If README is very short, return the whole thing
                         if len(content) < 1500:
                             return content.strip()

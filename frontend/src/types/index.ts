@@ -19,6 +19,8 @@ export type RepoInfo = {
   description: string;
   branches: string[];
   default_branch: string;
+  language?: string;
+  full_name?: string;
 };
 
 export type FileChange = {
