@@ -227,16 +227,12 @@ class ChatMessage(Base):
 Base.metadata.create_all(bind=engine)
 
 # Initialize FastAPI app
-app = FastAPI(
-    title="RepoSage API",
-    description="Backend API for RepoSage GitHub-integrated chatbot",
-    version="1.0.0"
-)
+app = FastAPI(title="RepoSage API")
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure more specifically in production
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # Explicitly allow frontend origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -270,6 +266,7 @@ class ChatRequest(BaseModel):
     access_token: Optional[str] = None
     model_name: Optional[str] = "models/gemini-2.0-flash"  # Default model
     model_provider: Optional[str] = "gemini"  # 'gemini' or 'claude'
+    selected_commit: Optional[str] = None  # Added field for commit hash
 
 class CommitInfo(BaseModel):
     hash: str
@@ -281,6 +278,8 @@ class CommitInfo(BaseModel):
 
 async def fetch_and_analyze_repo(repo_url: str, access_token: Optional[str] = None):
     """Fetch and analyze a repository."""
+    repo_path = None
+    
     try:
         # First validate the repository URL
         validation_result = await validate_git_repo(repo_url, access_token)
@@ -310,33 +309,96 @@ async def fetch_and_analyze_repo(repo_url: str, access_token: Optional[str] = No
             # Add token to URL for private repos
             clone_url = clone_url.replace('https://', f'https://{access_token}@')
         
-        # Clone without depth limitation for better commit history access
-        logger.info(f"Cloning repository {repo_url} to {repo_path}")
-        Repo.clone_from(clone_url, repo_path)
-        logger.info(f"Repository cloned to {repo_path}")
+        try:
+            # Clone without depth limitation for better commit history access
+            logger.info(f"Cloning repository {repo_url} to {repo_path}")
+            Repo.clone_from(clone_url, repo_path, depth=1000)
+            logger.info(f"Repository cloned to {repo_path}")
+        except GitCommandError as git_err:
+            logger.error(f"Git clone error: {git_err}")
+            # Clean up the directory if it was created
+            if repo_path and os.path.exists(repo_path):
+                try:
+                    import shutil
+                    shutil.rmtree(repo_path)
+                    logger.info(f"Cleaned up repo path: {repo_path}")
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to clean up repo path: {cleanup_err}")
+            
+            # Extract more useful error message from Git output
+            error_msg = str(git_err)
+            if "not found" in error_msg.lower():
+                raise HTTPException(status_code=404, detail="Repository not found. Please check the URL and your access permissions.")
+            elif "authentication" in error_msg.lower():
+                raise HTTPException(status_code=401, detail="Authentication failed. Please check your access token.")
+            elif "timeout" in error_msg.lower():
+                raise HTTPException(status_code=408, detail="Connection timeout. The repository server might be temporarily unavailable.")
+            else:
+                raise HTTPException(status_code=500, detail=f"Git error: {error_msg}")
         
-        # Initialize and run analysis on the cloned repo
-        analyzer = RepoAnalyzer(repo_path)
-        analysis = analyzer.analyze_repo()
-        
-        # Store in cache with the unique path
-        repo_cache[repo_url] = {
-            "analysis": analysis,
-            "analyzer": analyzer,
-            "path": repo_path,
-            "last_updated": datetime.now()
-        }
-        
-        return analysis
+        try:
+            # Verify the path exists before creating analyzer
+            if not os.path.exists(repo_path):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Repository path does not exist: {repo_path}"
+                )
+            
+            # Initialize and run analysis on the cloned repo
+            analyzer = RepoAnalyzer(repo_path)
+            analysis = analyzer.analyze_repo()
+            
+            # Store in cache with the unique path
+            repo_cache[repo_url] = {
+                "analysis": analysis,
+                "analyzer": analyzer,
+                "path": repo_path,
+                "last_updated": datetime.now()
+            }
+            
+            return analysis
+        except Exception as analyze_err:
+            logger.error(f"Error analyzing repository: {analyze_err}", exc_info=True)
+            
+            # Clean up the directory if it was created
+            if repo_path and os.path.exists(repo_path):
+                try:
+                    import shutil
+                    shutil.rmtree(repo_path)
+                    logger.info(f"Cleaned up repo path: {repo_path}")
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to clean up repo path: {cleanup_err}")
+            
+            raise HTTPException(status_code=500, detail=f"Error analyzing repository structure: {str(analyze_err)}")
         
     except GitCommandError as e:
         logger.error(f"Git error during repository fetch: {e}")
+        
+        # Clean up the directory if it was created
+        if repo_path and os.path.exists(repo_path):
+            try:
+                import shutil
+                shutil.rmtree(repo_path)
+                logger.info(f"Cleaned up repo path: {repo_path}")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to clean up repo path: {cleanup_err}")
+                
         raise HTTPException(status_code=500, detail=f"Git error: {str(e)}")
     except HTTPException:
         # Re-raise already formatted HTTP exceptions
         raise
     except Exception as e:
-        logger.error(f"Error during repository fetch and analysis: {e}")
+        logger.error(f"Error during repository fetch and analysis: {e}", exc_info=True)
+        
+        # Clean up the directory if it was created
+        if repo_path and os.path.exists(repo_path):
+            try:
+                import shutil
+                shutil.rmtree(repo_path)
+                logger.info(f"Cleaned up repo path: {repo_path}")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to clean up repo path: {cleanup_err}")
+                
         raise HTTPException(status_code=500, detail=f"Error analyzing repository: {str(e)}")
 
 @app.get("/")
@@ -350,10 +412,13 @@ async def get_repo_structure(repo_request: RepoRequest, background_tasks: Backgr
     repo_url = repo_request.repo_url
     access_token = repo_request.access_token
     
+    logger.info(f"Received request for repo structure: {repo_url}")
+    
     # Check cache first
     if repo_url in repo_cache:
         # Return cached data if available and recent enough (add staleness check if needed)
         analysis = repo_cache[repo_url]["analysis"]
+        logger.info(f"Returning cached repo structure for {repo_url}")
         return {
             "status": "success", 
             "repo_info": analysis["repo_info"],
@@ -364,22 +429,20 @@ async def get_repo_structure(repo_request: RepoRequest, background_tasks: Backgr
     # If not cached, proceed with validation and fetching
     try:
         # Validate the repository URL first
-        # Consider if validate_git_repo is still necessary if fetch_and_analyze handles errors
         validation_result = await validate_git_repo(repo_url, access_token)
         if not validation_result["valid"]:
-            # It's better to let fetch_and_analyze_repo handle the clone error
-            # directly for consistency, but keep validation for quick checks if desired.
-            # If keeping validation, ensure its error messages are distinct.
-             raise HTTPException(
-                 status_code=400, # Use 400 for bad input
-                 detail=f"Invalid or inaccessible repository: {validation_result.get('reason', 'Unknown reason')}"
-             )
+            logger.error(f"Invalid repository: {validation_result.get('reason', 'Unknown reason')}")
+            raise HTTPException(
+                status_code=400, # Use 400 for bad input
+                detail=f"Invalid or inaccessible repository: {validation_result.get('reason', 'Unknown reason')}"
+            )
 
-        # *** CHANGE: Await the fetch and analysis directly ***
-        # This will block until cloning/analysis is done or fails
+        # Await the fetch and analysis directly
+        logger.info(f"Fetching and analyzing repo: {repo_url}")
         analysis = await fetch_and_analyze_repo(repo_url, access_token)
         
         # If successful, return the structure
+        logger.info(f"Successfully analyzed repo: {repo_url}")
         return {
             "status": "success", 
             "repo_info": analysis["repo_info"],
@@ -389,14 +452,12 @@ async def get_repo_structure(repo_request: RepoRequest, background_tasks: Backgr
 
     except HTTPException as e:
         # Re-raise HTTPExceptions (like the one from fetch_and_analyze_repo or validation)
+        logger.error(f"HTTP Exception in get_repo_structure: {e.detail}")
         raise e
     except Exception as e:
         # Catch any other unexpected errors during the process
         logger.error(f"Unexpected error in get_repo_structure for {repo_url}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred while processing the repository.")
-
-    # Removed the old background task logic and "processing" response.
-    # Removed the final cache check as it's handled at the beginning now.
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred while processing the repository: {str(e)}")
 
 @app.post("/api/commits")
 async def get_commit_history(repo_request: RepoRequest):
@@ -477,6 +538,7 @@ async def chat_with_repo(chat_request: ChatRequest):
     messages = chat_request.messages
     access_token = chat_request.access_token
     model_name = chat_request.model_name
+    selected_commit = chat_request.selected_commit if hasattr(chat_request, 'selected_commit') else None
     
     # Handle different Gemini models
     if not model_name or model_name == "default":
@@ -497,6 +559,22 @@ async def chat_with_repo(chat_request: ChatRequest):
     
     # Process the chat messages
     try:
+        # Check if the last message refers to a commit hash
+        last_message = messages[-1]
+        commit_hash_match = None
+        
+        if last_message.role == "user":
+            # Look for potential commit hash pattern in the message
+            commit_hash_match = re.search(r'(?:commit\s+)?([0-9a-f]{7,40})', last_message.content, re.IGNORECASE)
+        
+        if commit_hash_match:
+            # Extract the hash from the match
+            possible_hash = commit_hash_match.group(1)
+            logger.info(f"Detected possible commit hash in query: {possible_hash}")
+            
+            # No need to fetch the commit specifically as the Gemini client will
+            # detect commit references in the query text
+        
         response = await gemini_client.chat(messages)
         
         return {
@@ -957,7 +1035,7 @@ async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
                         auth_url = repo_url
                         
                     logger.info(f"Cloning repository: {repo_url} to {clone_dir}")
-                    repo = Repo.clone_from(auth_url, clone_dir, depth=200)  # Use depth to speed up clone
+                    repo = Repo.clone_from(auth_url, clone_dir, depth=1000)  # Increased depth from 200 to 1000
                     
                     # Create analyzer
                     repo_analyzer = RepoAnalyzer(clone_dir)
@@ -982,6 +1060,60 @@ async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
             commit_info = repo_analyzer.get_commit_by_hash(commit_hash)
             
             if not commit_info:
+                logger.warning(f"Commit {commit_hash} not found in local repo. Trying GitHub API fallback...")
+                
+                # Fallback to GitHub API if it's a GitHub repo
+                if repo_url.startswith('https://github.com/'):
+                    try:
+                        # Parse GitHub repository owner and name
+                        parts = repo_url.strip('/').split('/')
+                        if len(parts) >= 5:
+                            owner = parts[3]
+                            repo_name = parts[4]
+                            
+                            # Use GitHub API to fetch the commit
+                            from github import Github
+                            gh = Github(access_token) if access_token else Github()
+                            gh_repo = gh.get_repo(f"{owner}/{repo_name}")
+                            
+                            # Try to get the commit
+                            gh_commit = gh_repo.get_commit(commit_hash)
+                            
+                            # Format the commit data in the same way as our local format
+                            commit_info = {
+                                "hash": gh_commit.sha,
+                                "short_hash": gh_commit.sha[:7],
+                                "author": f"{gh_commit.commit.author.name} <{gh_commit.commit.author.email}>",
+                                "date": gh_commit.commit.author.date.isoformat(),
+                                "message": gh_commit.commit.message.strip(),
+                                "stats": {
+                                    "files_changed": len(gh_commit.files),
+                                    "insertions": sum(f.additions for f in gh_commit.files),
+                                    "deletions": sum(f.deletions for f in gh_commit.files)
+                                },
+                                "file_changes": [
+                                    {
+                                        "path": f.filename,
+                                        "change_type": "added" if f.status == "added" else 
+                                                       "deleted" if f.status == "removed" else 
+                                                       "renamed" if f.status == "renamed" else "modified",
+                                        "insertions": f.additions,
+                                        "deletions": f.deletions
+                                    } for f in gh_commit.files
+                                ]
+                            }
+                            
+                            logger.info(f"Successfully fetched commit {commit_hash} via GitHub API")
+                            return {
+                                "status": "success",
+                                "commit": commit_info,
+                                "source": "github_api"
+                            }
+                    except Exception as e:
+                        logger.error(f"GitHub API fallback failed: {e}")
+                        # Continue to standard error handling
+                
+                # If GitHub API fallback failed or wasn't applicable
                 logger.warning(f"Commit {commit_hash} not found")
                 return {
                     "status": "error",
@@ -1871,6 +2003,96 @@ async def validate_repository(repo_request: RepoRequest):
             "status": "failed",
             "valid": False,
             "reason": validation_result["reason"]
+        }
+
+@app.post("/api/github-commit")
+async def get_github_commit(request: Dict[str, str] = Body(...)):
+    """
+    Get commit details directly from GitHub API, without requiring a local clone.
+    This is useful for viewing older commits outside our clone depth.
+    """
+    repo_url = request.get("repo_url")
+    commit_hash = request.get("commit_hash")
+    access_token = request.get("access_token")
+    
+    logger.info(f"Looking up GitHub commit directly: {commit_hash} for repo: {repo_url}")
+    
+    if not repo_url or not commit_hash:
+        raise HTTPException(status_code=400, detail="Repository URL and commit hash are required")
+        
+    # Verify this is a GitHub repo
+    if not repo_url.startswith('https://github.com/'):
+        return {
+            "status": "error",
+            "message": "This endpoint only works with GitHub repositories."
+        }
+    
+    try:
+        # Parse GitHub repository owner and name
+        parts = repo_url.strip('/').split('/')
+        if len(parts) < 5:
+            return {
+                "status": "error",
+                "message": "Invalid GitHub repository URL format."
+            }
+            
+        owner = parts[3]
+        repo_name = parts[4]
+        
+        # Use GitHub API to fetch the commit
+        from github import Github
+        gh = Github(access_token) if access_token else Github()
+        
+        # Add rate limit diagnostics
+        rate_limit = gh.get_rate_limit()
+        remaining = rate_limit.core.remaining
+        logger.info(f"GitHub API rate limit remaining: {remaining}")
+        
+        if remaining < 10:
+            logger.warning(f"GitHub API rate limit low: {remaining} remaining")
+            
+        gh_repo = gh.get_repo(f"{owner}/{repo_name}")
+        
+        # Fetch the commit
+        gh_commit = gh_repo.get_commit(commit_hash)
+        
+        # Format the commit data
+        commit_info = {
+            "hash": gh_commit.sha,
+            "short_hash": gh_commit.sha[:7],
+            "author": f"{gh_commit.commit.author.name} <{gh_commit.commit.author.email}>",
+            "date": gh_commit.commit.author.date.isoformat(),
+            "message": gh_commit.commit.message.strip(),
+            "stats": {
+                "files_changed": len(gh_commit.files),
+                "insertions": sum(f.additions for f in gh_commit.files),
+                "deletions": sum(f.deletions for f in gh_commit.files)
+            },
+            "file_changes": [
+                {
+                    "path": f.filename,
+                    "change_type": "added" if f.status == "added" else 
+                                "deleted" if f.status == "removed" else 
+                                "renamed" if f.status == "renamed" else "modified",
+                    "insertions": f.additions,
+                    "deletions": f.deletions,
+                    "patch": f.patch if hasattr(f, 'patch') else None
+                } for f in gh_commit.files
+            ]
+        }
+        
+        logger.info(f"Successfully fetched GitHub commit: {gh_commit.sha}")
+        return {
+            "status": "success",
+            "commit": commit_info,
+            "source": "github_api_direct"
+        }
+            
+    except Exception as e:
+        logger.error(f"Error fetching commit from GitHub: {e}", exc_info=True)
+        return {
+            "status": "error", 
+            "message": f"Error fetching commit from GitHub: {str(e)}"
         }
 
 if __name__ == "__main__":

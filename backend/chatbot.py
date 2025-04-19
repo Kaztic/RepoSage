@@ -16,7 +16,7 @@ from datetime import datetime
 import requests
 import google.generativeai as genai
 from github import Github
-from git import Repo
+from git import Repo, GitCommandError
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
@@ -55,19 +55,48 @@ class RepoAnalyzer:
         import concurrent.futures
         
         # First get basic info (quick operation)
-        repo_info = self._get_repo_info()
+        try:
+            repo_info = self._get_repo_info()
+        except Exception as e:
+            logger.error(f"Error getting repository info: {e}", exc_info=True)
+            repo_info = {
+                "name": os.path.basename(self.repo.working_dir),
+                "description": "Error extracting repository description",
+                "branches": [],
+                "default_branch": "main"
+            }
         
         # Then run heavier operations in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            future_commit_history = executor.submit(self._get_commit_history)
-            future_file_structure = executor.submit(self._get_file_structure)
-            
-            # Wait for all tasks to complete
-            commit_history = future_commit_history.result()
-            file_structure = future_file_structure.result()
+        commit_history = []
+        file_structure = {}
+        important_files = []
         
-        # Only run this after we have file structure
-        important_files = self._identify_important_files()
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                future_commit_history = executor.submit(self._get_commit_history)
+                future_file_structure = executor.submit(self._get_file_structure)
+                
+                # Wait for all tasks to complete with exception handling
+                try:
+                    commit_history = future_commit_history.result()
+                except Exception as e:
+                    logger.error(f"Error getting commit history: {e}", exc_info=True)
+                    commit_history = []
+                
+                try:
+                    file_structure = future_file_structure.result()
+                except Exception as e:
+                    logger.error(f"Error getting file structure: {e}", exc_info=True)
+                    file_structure = {}
+                
+            # Only run this after we have file structure
+            try:
+                important_files = self._identify_important_files()
+            except Exception as e:
+                logger.error(f"Error identifying important files: {e}", exc_info=True)
+                important_files = []
+        except Exception as e:
+            logger.error(f"Error during parallel analysis: {e}", exc_info=True)
         
         results = {
             "repo_info": repo_info,
@@ -81,23 +110,139 @@ class RepoAnalyzer:
     
     def _get_repo_info(self) -> Dict[str, str]:
         """Extract basic repository information."""
+        # Get the repo name
+        repo_name = os.path.basename(self.repo.working_dir)
+        
+        # Try to determine the primary language if possible
+        language = "Unknown"
+        try:
+            # Look for common language indicators
+            if os.path.exists(os.path.join(self.repo.working_dir, "package.json")):
+                language = "JavaScript/TypeScript"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "go.mod")):
+                language = "Go"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "pom.xml")):
+                language = "Java"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "requirements.txt")) or \
+                 os.path.exists(os.path.join(self.repo.working_dir, "setup.py")):
+                language = "Python"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "Cargo.toml")):
+                language = "Rust"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "CMakeLists.txt")):
+                language = "C/C++"
+            elif os.path.exists(os.path.join(self.repo.working_dir, "Gemfile")):
+                language = "Ruby"
+            
+            # If we couldn't determine from common project files, check file counts
+            if language == "Unknown":
+                file_counts = {}
+                for root, _, files in os.walk(self.repo.working_dir):
+                    for file in files:
+                        ext = os.path.splitext(file)[1].lower()
+                        if ext:
+                            file_counts[ext] = file_counts.get(ext, 0) + 1
+                
+                # Map extensions to languages
+                ext_to_lang = {
+                    ".py": "Python",
+                    ".js": "JavaScript",
+                    ".ts": "TypeScript",
+                    ".tsx": "TypeScript/React",
+                    ".jsx": "JavaScript/React",
+                    ".java": "Java",
+                    ".go": "Go",
+                    ".rs": "Rust",
+                    ".c": "C",
+                    ".cpp": "C++",
+                    ".h": "C/C++",
+                    ".rb": "Ruby",
+                    ".php": "PHP",
+                    ".cs": "C#",
+                    ".swift": "Swift"
+                }
+                
+                # Find the most common extension
+                if file_counts:
+                    most_common_ext = max(file_counts.items(), key=lambda x: x[1])[0]
+                    language = ext_to_lang.get(most_common_ext, "Unknown")
+        except Exception as e:
+            logger.warning(f"Error determining primary language: {e}")
+            language = "Unknown"
+            
+        # Extract original full name from remote URL if possible
+        full_name = ""
+        try:
+            origin_url = self.repo.git.config('--get', 'remote.origin.url')
+            if 'github.com' in origin_url:
+                # Extract owner/repo format from GitHub URL
+                if origin_url.endswith('.git'):
+                    origin_url = origin_url[:-4]  # Remove .git suffix
+                parts = origin_url.split('github.com/')
+                if len(parts) > 1:
+                    full_name = parts[1]
+        except Exception as e:
+            logger.warning(f"Error extracting full repo name: {e}")
+            
         return {
-            "name": os.path.basename(self.repo.working_dir),
+            "name": repo_name,
             "description": self._get_readme_summary(),
             "branches": [branch.name for branch in self.repo.branches],
             "default_branch": self.repo.active_branch.name,
+            "language": language,
+            "full_name": full_name
         }
     
     def _get_readme_summary(self) -> str:
-        """Extract summary from README if available."""
+        """Extract summary from README if available using Gemini."""
         readme_paths = ['README.md', 'README.rst', 'Readme.md', 'readme.md']
         for path in readme_paths:
             full_path = os.path.join(self.repo.working_dir, path)
             if os.path.exists(full_path):
-                with open(full_path, 'r', encoding='utf-8') as f:
+                with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
                     try:
                         content = f.read()
                         
+                        # If README doesn't exist or is empty, return a default message
+                        if not content.strip():
+                            return "No README content available."
+                        
+                        # Try to use Gemini to summarize the README
+                        try:
+                            # Import the Google Generative AI library
+                            import google.generativeai as genai
+                            from google.api_core.exceptions import GoogleAPIError
+                            
+                            # Get Gemini API key from environment variables
+                            api_key = os.environ.get('GEMINI_API_KEY')
+                            
+                            if api_key:
+                                # Configure the Gemini API
+                                genai.configure(api_key=api_key)
+                                
+                                # Limit content length to prevent token overflow
+                                max_content_length = 20000
+                                if len(content) > max_content_length:
+                                    content = content[:max_content_length] + "..."
+                                
+                                # Create the model and generate a summary
+                                model = genai.GenerativeModel('models/gemini-1.5-flash')
+                                prompt = f"Summarize the following README file to describe what this project does, in a simple and clear way for developers:\n\n{content}"
+                                
+                                response = model.generate_content(prompt)
+                                
+                                if response.text and response.text.strip():
+                                    return response.text.strip()
+                                
+                                # If Gemini response is empty, fall back to default processing
+                                logger.warning("Gemini returned empty summary, falling back to default processing")
+                            else:
+                                logger.warning("No Gemini API key found, falling back to default processing")
+                                
+                        except (ImportError, GoogleAPIError, Exception) as e:
+                            logger.warning(f"Error using Gemini for README summarization: {e}")
+                            # Continue with default processing if Gemini fails
+                        
+                        # Default processing (fallback if Gemini fails)
                         # If README is very short, return the whole thing
                         if len(content) < 1500:
                             return content.strip()
@@ -214,15 +359,43 @@ class RepoAnalyzer:
             max_files: Maximum number of files to process to avoid timeouts
         """
         try:
+            # Clean and normalize the commit hash first
+            original_hash = commit_hash
+            commit_hash = commit_hash.strip()
+            
+            # Remove any non-hexadecimal characters
+            cleaned_hash = re.sub(r'[^0-9a-fA-F]', '', commit_hash)
+            
+            if cleaned_hash != commit_hash:
+                logger.info(f"Cleaned commit hash from '{commit_hash}' to '{cleaned_hash}'")
+                commit_hash = cleaned_hash
+            
+            # If the hash is empty after cleaning, return None
+            if not commit_hash:
+                logger.warning(f"Invalid commit hash after cleaning: '{original_hash}'")
+                return None
+                
             # First try to find in cached history
             for commit in self.commit_history:
                 # Check if the provided hash matches either the full hash or the short hash
                 if commit_hash == commit["hash"] or commit["hash"].startswith(commit_hash) or commit["short_hash"] == commit_hash:
                     return commit
             
-            # If not found, try to get directly from git
+            # If not found in cache, try to resolve the hash using git rev-parse
+            # This helps with very short or ambiguous hashes
             try:
-                # Now try to get the commit
+                full_hash = self.repo.git.rev_parse(f"{commit_hash}")
+                if full_hash:
+                    # If we get here, the hash is valid but wasn't in our cache
+                    logger.info(f"Resolved short hash {commit_hash} to full hash {full_hash}")
+                    commit_hash = full_hash
+            except GitCommandError as e:
+                # If rev-parse fails, continue with the original hash
+                logger.warning(f"Failed to resolve hash with rev-parse: {e}")
+                pass
+            
+            # Now try to get the commit
+            try:
                 commit = self.repo.commit(commit_hash)
                 
                 commit_info = {
@@ -409,6 +582,20 @@ class RepoAnalyzer:
                 commit_info["file_changes"] = file_changes
                 
                 return commit_info
+            except ValueError as e:
+                if "Check that it exists" in str(e):
+                    logger.error(f"Commit {commit_hash} not found in repository. This might be due to shallow clone limits.")
+                    return None
+            except GitCommandError as e:
+                if "bad object" in str(e) or "not in" in str(e):
+                    logger.error(f"Git error: Commit {commit_hash} not found. This may be outside the shallow clone depth.")
+                    return {
+                        "status": "error",
+                        "message": f"Commit {commit_hash} not found. This may be because it's older than the repository clone depth (1000 commits). Try using a more recent commit."
+                    }
+                else:
+                    logger.error(f"Git error retrieving commit {commit_hash}: {e}")
+                    return None
             except Exception as e:
                 logger.error(f"Error retrieving commit {commit_hash}: {e}")
                 return None
@@ -724,6 +911,20 @@ class GeminiClient:
         
         user_query = dict_messages[-1]["content"]
         
+        # Check if query contains a likely commit hash
+        commit_hash_match = re.search(r'(?:commit\s+)?([0-9a-f]{7,40})', user_query, re.IGNORECASE)
+        specific_commit = None
+        
+        if commit_hash_match:
+            # Extract the hash from the match
+            possible_hash = commit_hash_match.group(1)
+            logger.info(f"Detected possible commit hash in query: {possible_hash}")
+            
+            # Try to find the commit
+            specific_commit = self.repo_analyzer.get_commit_by_hash(possible_hash)
+            if specific_commit:
+                logger.info(f"Found commit matching hash: {specific_commit['short_hash']}")
+        
         # Detect if the query is looking for specific code elements
         code_search_patterns = [
             r'function\s+(\w+)',
@@ -942,9 +1143,33 @@ class GeminiClient:
             code_search_keywords = ['function', 'class', 'method', 'implementation', 'code', 'definition']
             is_code_query = any(keyword in query.lower() for keyword in code_search_keywords)
             
+            # Check if this is a commit-specific query
+            commit_search_keywords = ['commit', 'change', 'revision', 'version', 'diff', 'hash']
+            is_commit_query = any(keyword in query.lower() for keyword in commit_search_keywords)
+            
+            # Check if context includes specific commit info
+            context_data = json.loads(context_str)
+            has_specific_commit = 'repo_info' in context_data and 'specific_commit' in context_data['repo_info']
+            
+            # Customize the prompt based on the query type
+            system_context = """You are RepoSage, an AI assistant specialized in analyzing and explaining GitHub repositories.
+            You should help the user understand repository structure, code, commits, and functionality."""
+            
+            # Add specific instructions for commit analysis if needed
+            if has_specific_commit or is_commit_query:
+                commit_context = """
+                IMPORTANT: A specific commit has been identified in the repository context. When discussing this commit:
+                1. Explain the purpose of the commit based on its message and changes
+                2. Describe what files were modified and how they were changed
+                3. Explain the impact of these changes on the codebase
+                4. If available, reference the diff to point out specific code changes
+                
+                This commit information is crucial context for answering the user's question accurately.
+                """
+                system_context += commit_context
+            
             prompt = f"""
-            You are RepoSage, an AI assistant specialized in analyzing and explaining GitHub repositories.
-            You should help the user understand repository structure, code, commits, and functionality.
+            {system_context}
             
             Use the following repository context to answer the user's question. Your goal is to provide
             clear, accurate and helpful information about the repository.
@@ -1138,11 +1363,31 @@ If you're uncertain about something, acknowledge your limitations rather than gu
     def _prepare_context(self, query):
         """Prepare repository context based on the user query."""
         try:
+            # Check if query contains a likely commit hash
+            # Look for patterns like "commit abc123" or just "abc123" if it looks like a hash
+            commit_hash_match = re.search(r'(?:commit\s+)?([0-9a-f]{7,40})', query, re.IGNORECASE)
+            specific_commit = None
+            
+            if commit_hash_match:
+                # Extract the hash from the match
+                possible_hash = commit_hash_match.group(1)
+                logger.info(f"Detected possible commit hash in query: {possible_hash}")
+                
+                # Try to find the commit
+                specific_commit = self.repo_analyzer.get_commit_by_hash(possible_hash)
+                if specific_commit:
+                    logger.info(f"Found commit matching hash: {specific_commit['short_hash']}")
+            
             # Find relevant files based on the query
             relevant_files = self.repo_analyzer.search_relevant_files(query, top_k=5)
             
-            # Search commit history for relevant commits
+            # Search commit history for relevant commits 
+            # If we already have a specific commit, make sure it's included
             relevant_commits = self.repo_analyzer.search_commit_history(query)[:3]
+            if specific_commit:
+                # Add the specific commit at the beginning if not already in the list
+                if not any(c['hash'] == specific_commit['hash'] for c in relevant_commits):
+                    relevant_commits.insert(0, specific_commit)
             
             # Get README summary for general context
             readme_summary = self._get_readme_summary()
@@ -1151,8 +1396,41 @@ If you're uncertain about something, acknowledge your limitations rather than gu
             context_parts = [
                 f"Repository Name: {os.path.basename(self.repo_analyzer.repo.working_dir)}",
                 f"README Summary: {readme_summary[:500]}...",
-                "\nRelevant Files:"
             ]
+            
+            # Add specific commit details if available
+            if specific_commit:
+                commit_details = [
+                    "\nSPECIFIC COMMIT REQUESTED:",
+                    f"Hash: {specific_commit['hash']}",
+                    f"Short Hash: {specific_commit['short_hash']}",
+                    f"Author: {specific_commit['author']}",
+                    f"Date: {specific_commit['date']}",
+                    f"Message: {specific_commit['message']}",
+                ]
+                
+                # Add file changes for the specific commit
+                if specific_commit.get('file_changes'):
+                    changes = [f"- {c['path']} ({c['change_type']})" for c in specific_commit['file_changes'][:10]]
+                    commit_details.append("Files changed:")
+                    commit_details.extend(changes)
+                    
+                    # Try to add some actual diff content for context if available
+                    if len(specific_commit['file_changes']) > 0:
+                        try:
+                            # Get diff for the first changed file
+                            sample_file = specific_commit['file_changes'][0]['path']
+                            diff = self.repo_analyzer.get_file_diff(specific_commit['hash'], sample_file)
+                            if diff:
+                                commit_details.append(f"\nSample diff for {sample_file}:")
+                                commit_details.append(f"```diff\n{diff[:1000]}\n```")
+                        except Exception as e:
+                            logger.warning(f"Could not get diff for sample file: {e}")
+                
+                context_parts.append("\n".join(commit_details))
+            
+            # Add relevant files context
+            context_parts.append("\nRelevant Files:")
             
             # Add file contents for context
             for file_path, _ in relevant_files:
@@ -1161,8 +1439,8 @@ If you're uncertain about something, acknowledge your limitations rather than gu
                     content = content[:5000] + "...[truncated]"
                 context_parts.append(f"\nFile: {file_path}\n```\n{content}\n```")
             
-            # Add relevant commits
-            if relevant_commits:
+            # Add relevant commits if we didn't already add a specific commit
+            if relevant_commits and not specific_commit:
                 context_parts.append("\nRelevant Commits:")
                 for commit in relevant_commits:
                     context_parts.append(f"\nCommit: {commit['short_hash']} - {commit['message']}")
@@ -1172,7 +1450,7 @@ If you're uncertain about something, acknowledge your limitations rather than gu
             
             return "\n".join(context_parts)
         except Exception as e:
-            logger.error(f"Error preparing context: {e}")
+            logger.error(f"Error preparing context: {e}", exc_info=True)
             return "Error preparing repository context."
     
     def _get_readme_summary(self):

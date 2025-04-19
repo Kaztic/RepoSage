@@ -2,6 +2,7 @@ export type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
   timestamp?: string;
+  id?: string;
 };
 
 export type FileStructure = {
@@ -18,6 +19,8 @@ export type RepoInfo = {
   description: string;
   branches: string[];
   default_branch: string;
+  language?: string;
+  full_name?: string;
 };
 
 export type FileChange = {

@@ -9,9 +9,9 @@ export default function ProgressBar({ progress }: ProgressBarProps) {
   const normalizedProgress = Math.min(100, Math.max(0, progress));
   
   return (
-    <div className="w-full bg-gray-700 rounded-full h-2">
+    <div className="w-full bg-surface-700/50 rounded-full h-2 overflow-hidden">
       <div 
-        className="bg-blue-500 h-2 rounded-full transition-all duration-300 ease-in-out"
+        className="bg-primary-500 h-2 rounded-full transition-all duration-300 ease-in-out shadow-subtle"
         style={{ width: `${normalizedProgress}%` }}
         role="progressbar"
         aria-valuenow={normalizedProgress}

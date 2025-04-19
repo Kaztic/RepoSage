@@ -142,7 +142,7 @@ export const renderDiffBlock = (diffBlock: DiffBlock, filePath: string, blockIdx
   if (diffBlock.header && !diffBlock.header.startsWith('@@')) {
     return (
       <div key={blockIdx} className="mb-4">
-        <div className="py-2 px-3 bg-gray-800 rounded text-gray-300">
+        <div className="py-3 px-4 bg-surface-800 rounded-md text-surface-300 border border-surface-700/50">
           {diffBlock.header}
         </div>
       </div>
@@ -152,18 +152,18 @@ export const renderDiffBlock = (diffBlock: DiffBlock, filePath: string, blockIdx
   return (
     <div key={blockIdx} className="mb-4">
       {diffBlock.header && diffBlock.header.startsWith('@@') && (
-        <div className="text-gray-400 font-mono text-xs mb-1">
+        <div className="text-surface-400 font-mono text-xs mb-1 px-2">
           {diffBlock.header}
         </div>
       )}
-      <div className="flex flex-row border border-gray-700 rounded overflow-hidden">
+      <div className="flex flex-row border border-surface-700 rounded-md overflow-hidden shadow-subtle">
         {/* Left side (removed) */}
-        <div className="w-1/2 border-r border-gray-700 bg-red-900/20">
+        <div className="w-1/2 border-r border-surface-700 bg-red-900/10">
           <table className="w-full">
             <tbody>
               {diffBlock.removed.map((line: string, idx: number) => (
-                <tr key={`left-${idx}`} className="hover:bg-red-900/40">
-                  <td className="px-1 text-right text-gray-500 select-none border-r border-gray-700 bg-gray-800/50 w-10">
+                <tr key={`left-${idx}`} className="hover:bg-red-900/20 transition-colors">
+                  <td className="px-1 text-right text-surface-500 select-none border-r border-surface-700 bg-surface-800/70 w-10">
                     {diffBlock.removedLineNumbers[idx]}
                   </td>
                   <td className="px-2 font-mono whitespace-pre-wrap overflow-x-auto text-red-300">
@@ -173,20 +173,20 @@ export const renderDiffBlock = (diffBlock: DiffBlock, filePath: string, blockIdx
               ))}
               {diffBlock.removed.length === 0 && (
                 <tr>
-                  <td className="px-1 text-right text-gray-500 select-none border-r border-gray-700 bg-gray-800/50 w-10"></td>
-                  <td className="px-2 py-1 italic text-gray-500">No removals</td>
+                  <td className="px-1 text-right text-surface-500 select-none border-r border-surface-700 bg-surface-800/70 w-10"></td>
+                  <td className="px-2 py-1 italic text-surface-500">No removals</td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
         {/* Right side (added) */}
-        <div className="w-1/2 bg-green-900/20">
+        <div className="w-1/2 bg-green-900/10">
           <table className="w-full">
             <tbody>
               {diffBlock.added.map((line: string, idx: number) => (
-                <tr key={`right-${idx}`} className="hover:bg-green-900/40">
-                  <td className="px-1 text-right text-gray-500 select-none border-r border-gray-700 bg-gray-800/50 w-10">
+                <tr key={`right-${idx}`} className="hover:bg-green-900/20 transition-colors">
+                  <td className="px-1 text-right text-surface-500 select-none border-r border-surface-700 bg-surface-800/70 w-10">
                     {diffBlock.addedLineNumbers[idx]}
                   </td>
                   <td className="px-2 font-mono whitespace-pre-wrap overflow-x-auto text-green-300">
@@ -196,8 +196,8 @@ export const renderDiffBlock = (diffBlock: DiffBlock, filePath: string, blockIdx
               ))}
               {diffBlock.added.length === 0 && (
                 <tr>
-                  <td className="px-1 text-right text-gray-500 select-none border-r border-gray-700 bg-gray-800/50 w-10"></td>
-                  <td className="px-2 py-1 italic text-gray-500">No additions</td>
+                  <td className="px-1 text-right text-surface-500 select-none border-r border-surface-700 bg-surface-800/70 w-10"></td>
+                  <td className="px-2 py-1 italic text-surface-500">No additions</td>
                 </tr>
               )}
             </tbody>

@@ -189,9 +189,9 @@ export default function useRepositoryState() {
       pollingIntervalRef.current = setInterval(() => {
         setAnalysisProgress(prev => {
           // Simulate progress up to 90% (the last 10% will happen on success)
-          if (prev < 90) {
+          if (prev < 30) {
             // Start slow, then accelerate, then slow down
-            const increment = prev < 30 ? 5 : (prev < 60 ? 3 : 1);
+            const increment = prev < 10 ? 5 : (prev < 20 ? 3 : 1);
             return prev + increment;
           }
           return prev;
@@ -367,13 +367,17 @@ export default function useRepositoryState() {
     }
     
     try {
-      // Call the API with the selected Gemini model
+      // Check if a commit is selected that should be included in context
+      const commitHash = selectedCommit ? selectedCommit.hash : undefined;
+      
+      // Call the API with the selected Gemini model, including commit info if available
       const response = await apiService.sendChatMessageToAI(
         repoUrl, 
         [...messages, userMessage], 
         accessToken || undefined,
         selectedModel,
-        'gemini'
+        'gemini',
+        commitHash
       );
       
       // Extract the assistant's response content
@@ -389,8 +393,33 @@ export default function useRepositoryState() {
       ]);
 
       // *** START: Check for commit hashes in the response ***
-      const potentialHashes = assistantContent.match(/\b[a-f0-9]{7,40}\b/gi);
-      if (potentialHashes && potentialHashes.length > 0) {
+      // Look for patterns that are likely to be commit hashes
+      // This improved regex looks for hash patterns that are:
+      // 1. Mentioned as "commit <hash>"
+      // 2. Properly formatted hashes of correct length
+      // 3. Not part of a diff block (to avoid picking up diff hashes)
+      const hashMatches = assistantContent.match(/\b(?:commit:?\s+|hash:?\s+|commit hash:?\s+|sha:?\s+)?([0-9a-f]{7,40})\b/gi);
+      
+      // Extract just the hashes from the matches
+      const potentialHashes = [];
+      if (hashMatches) {
+        for (const match of hashMatches) {
+          // Extract just the hash part
+          const hashPart = match.replace(/\b(?:commit:?\s+|hash:?\s+|commit hash:?\s+|sha:?\s+)/i, '');
+          if (hashPart.match(/^[0-9a-f]{7,40}$/i)) {
+            potentialHashes.push(hashPart);
+          }
+        }
+      }
+      
+      // Filter to skip hashes within diff blocks
+      // Don't process hashes if they appear to be in diff content
+      const isDiffContent = assistantContent.includes('```diff') || 
+                          assistantContent.includes('+++') || 
+                          assistantContent.includes('---') ||
+                          assistantContent.match(/^[+-]{1}[^+-]/m);
+      
+      if (potentialHashes.length > 0 && !isDiffContent) {
         console.log('Found potential commit hashes in response:', potentialHashes);
         const knownHashes = new Set(commitHistory.map(c => c.hash));
         const knownShortHashes = new Set(commitHistory.map(c => c.short_hash));
@@ -645,10 +674,12 @@ export default function useRepositoryState() {
       setLoading(true);
       
       // Add a temporary loading message to the chat
+      const tempMessageId = `lookup-${Date.now()}`;
       const tempMessage: ChatMessage = {
         role: 'assistant',
         content: `Looking up commit ${commitHash}...`,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        id: tempMessageId
       };
       setMessages((prev: ChatMessage[]) => [...prev, tempMessage]);
       
@@ -660,9 +691,60 @@ export default function useRepositoryState() {
         await fetchRepoStructure();
       }
       
+      // Try to normalize the hash format
+      let normalizedHash = commitHash;
+      
+      // Minimum length for a valid Git hash
+      const MIN_HASH_LENGTH = 7;
+      
+      // Handle short hashes - require at least 7 characters for uniqueness
+      if (normalizedHash.length < MIN_HASH_LENGTH) {
+        console.warn(`Very short commit hash: ${normalizedHash}. A commit hash should be at least ${MIN_HASH_LENGTH} characters.`);
+      }
+      
+      // Validate hash format - accept hex string that meets minimum length requirement
+      if (!normalizedHash.match(/^[0-9a-f]+$/i)) {
+        // Try to fix common issues with commit hashes
+        // Remove any non-hex characters
+        const cleanedHash = normalizedHash.replace(/[^0-9a-f]/gi, '');
+        
+        // If the cleaned hash is valid, use it
+        if (cleanedHash.match(/^[0-9a-f]+$/i)) {
+          console.log(`Fixed invalid hash format from ${normalizedHash} to ${cleanedHash}`);
+          normalizedHash = cleanedHash;
+        } else {
+          // Remove the temporary message
+          setMessages((prev: ChatMessage[]) => prev.filter(m => m.id !== tempMessageId));
+          
+          // Add error message to chat
+          setMessages((prev: ChatMessage[]) => [...prev, {
+            role: 'assistant',
+            content: `Invalid commit hash format: "${commitHash}"\n\nA commit hash should be a hexadecimal string (containing only 0-9 and a-f characters). Please check the hash and try again.`
+          }]);
+          
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Add additional validation for minimum length after cleaning
+      if (normalizedHash.length < MIN_HASH_LENGTH) {
+        // Remove the temporary message
+        setMessages((prev: ChatMessage[]) => prev.filter(m => m.id !== tempMessageId));
+        
+        // Add error message to chat about minimum length
+        setMessages((prev: ChatMessage[]) => [...prev, {
+          role: 'assistant',
+          content: `The provided hash "${commitHash}" is too short. Git commit hashes should be at least ${MIN_HASH_LENGTH} characters long for uniqueness. Please provide a longer hash.`
+        }]);
+        
+        setLoading(false);
+        return;
+      }
+      
       const data = await apiService.fetchCommitByHash(
         repoUrl,
-        commitHash,
+        normalizedHash,
         accessToken || undefined
       );
       console.log('Commit lookup response:', data);
@@ -671,7 +753,34 @@ export default function useRepositoryState() {
         const commit = data.commit;
         
         // Remove the temporary message
-        setMessages((prev: ChatMessage[]) => prev.filter(m => m !== tempMessage));
+        setMessages((prev: ChatMessage[]) => prev.filter(m => m.id !== tempMessageId));
+        
+        // *** START: Update commitHistory state with detailed commit ***
+        setCommitHistory(prevHistory => {
+          const existingIndex = prevHistory.findIndex(c => c.hash === commit.hash);
+          if (existingIndex !== -1) {
+            // Replace existing basic commit info with detailed info
+            const updatedHistory = [...prevHistory];
+            updatedHistory[existingIndex] = {
+              ...updatedHistory[existingIndex], // Keep any existing UI state if needed
+              ...commit // Overwrite with new detailed data
+            };
+            return updatedHistory;
+          } else {
+            // Add the new detailed commit if not found
+            // Ensure file_changes have default UI state if needed
+            const detailedCommit = {
+              ...commit,
+              file_changes: commit.file_changes?.map((fc: any) => ({ 
+                ...fc, 
+                loading: false, 
+                showDiff: false 
+              })) || []
+            };
+            return [...prevHistory, detailedCommit];
+          }
+        });
+        // *** END: Update commitHistory state with detailed commit ***
         
         // Format commit details for chat
         const fileNote = commit.stats.note ? `\n\n*Note: ${commit.stats.note}*` : '';
@@ -710,7 +819,7 @@ ${commit.file_changes && commit.file_changes.length > 0
         }]);
       } else if (data.message && data.message.includes("timed out") && attempt < 3) {
         // Handle timeout by trying again with a retry
-        setMessages((prev: ChatMessage[]) => prev.filter(m => m !== tempMessage));
+        setMessages((prev: ChatMessage[]) => prev.filter(m => m.id !== tempMessageId));
         setMessages((prev: ChatMessage[]) => [...prev, {
           role: 'assistant',
           content: `The commit lookup is taking longer than expected. Retrying... (${attempt}/3)`
@@ -720,14 +829,140 @@ ${commit.file_changes && commit.file_changes.length > 0
         setTimeout(() => {
           lookupCommitByHash(commitHash, attempt + 1);
         }, 2000);
-      } else {
-        // Remove the temporary message
-        setMessages((prev: ChatMessage[]) => prev.filter(m => m !== tempMessage));
-        
-        // Add error message to chat
+      } else if (data.status === 'error' && (
+          data.message.includes('not found') || 
+          data.message.includes('object not found') ||
+          data.message.includes('clone depth')
+        )) {
+        // Try direct GitHub API as a fallback for commits not found in the local repo
+        setMessages((prev: ChatMessage[]) => prev.filter(m => m.id !== tempMessageId));
         setMessages((prev: ChatMessage[]) => [...prev, {
           role: 'assistant',
-          content: `Commit not found: ${data.message || 'The provided commit hash does not match any commits in this repository. Please check the hash and try again.'}`
+          content: `Commit not found in local repository. Trying direct GitHub API lookup...`
+        }]);
+        
+        try {
+          // Try to fetch directly from GitHub
+          const githubData = await apiService.fetchGitHubCommit(
+            repoUrl, 
+            normalizedHash,
+            accessToken || undefined
+          );
+          
+          if (githubData.status === 'success') {
+            const commit = githubData.commit;
+            
+            // *** START: Update commitHistory state with detailed commit from GitHub API ***
+            setCommitHistory(prevHistory => {
+              const existingIndex = prevHistory.findIndex(c => c.hash === commit.hash);
+              if (existingIndex !== -1) {
+                // Replace existing basic commit info with detailed info
+                const updatedHistory = [...prevHistory];
+                updatedHistory[existingIndex] = {
+                  ...updatedHistory[existingIndex], // Keep existing UI state
+                  ...commit // Overwrite with new detailed data
+                };
+                return updatedHistory;
+              } else {
+                // Add the new detailed commit if not found
+                const detailedCommit = {
+                  ...commit,
+                  file_changes: commit.file_changes?.map((fc: any) => ({ 
+                    ...fc, 
+                    loading: false, 
+                    showDiff: false 
+                  })) || []
+                };
+                return [...prevHistory, detailedCommit];
+              }
+            });
+            // *** END: Update commitHistory state with detailed commit from GitHub API ***
+
+            // Format commit details for chat
+            const fileNote = commit.stats.note ? `\n\n*Note: ${commit.stats.note}*` : '';
+            const commitDetails = `**Commit ${commit.short_hash}** (${commit.hash})
+            
+Message: ${commit.message}
+Author: ${commit.author}
+Date: ${new Date(commit.date).toLocaleString()}
+Files changed: ${commit.stats.files_changed}${fileNote}
+
+${commit.file_changes && commit.file_changes.length > 0 
+  ? 'Files:\n' + commit.file_changes.slice(0, 15).map((file: {path: string, change_type: string}) => 
+    `- ${file.path} (${file.change_type})`).join('\n') + 
+    (commit.file_changes.length > 15 ? `\n\n*...and ${commit.file_changes.length - 15} more files*` : '')
+  : 'No file changes found'}
+
+*Note: This commit was retrieved directly from GitHub API and may not be available in the local repository.*`;
+            
+            // Add commit details to chat
+            setMessages((prev: ChatMessage[]) => [...prev, {
+              role: 'assistant',
+              content: commitDetails
+            }]);
+            
+            // Also show in the commit viewer
+            viewCommitDetails(githubData.commit);
+            setCommitHashInput('');
+            
+            // Update URL with commit hash
+            const url = new URL(window.location.href);
+            url.searchParams.set('commit', githubData.commit.hash);
+            window.history.pushState({}, '', url);
+            
+            // Add a follow-up message
+            setMessages((prev: ChatMessage[]) => [...prev, {
+              role: 'assistant',
+              content: 'Is there anything specific you\'d like to know about this commit? You can ask me to explain the changes or analyze what this commit does.'
+            }]);
+            
+            setLoading(false);
+            return;
+          }
+          
+          // If GitHub lookup also fails, show the original error
+          setMessages((prev: ChatMessage[]) => [...prev, {
+            role: 'assistant',
+            content: `GitHub API lookup also failed: ${githubData.message || 'Unknown error'}`
+          }]);
+        } catch (githubError) {
+          console.error('Error in GitHub API fallback:', githubError);
+        }
+        
+        // Show the original error message
+        // Add user-friendly error message to chat
+        let errorMsg = data.message || 'Unable to locate this commit.';
+        let suggestionMsg = '';
+        
+        if (errorMsg.includes('not found') || errorMsg.includes('object not found')) {
+          errorMsg = `Commit not found: ${normalizedHash}\n\nThis commit hash doesn't match any commits in the current repository.`;
+          suggestionMsg = `Please verify that:
+1. The hash is correct
+2. You're looking at the right repository
+3. The commit exists in the currently loaded branch
+4. If this is a private repository, ensure your GitHub token has the necessary permissions`;
+          
+          // Add specific suggestion for shallow clone issue
+          if (errorMsg.includes('older than the repository clone depth') || errorMsg.includes('shallow clone')) {
+            suggestionMsg += `\n5. This commit may be older than the system's clone depth limit (1000 commits). Try using a more recent commit or contact the administrator to increase the clone depth.`;
+          }
+        } else if (errorMsg.includes('timed out')) {
+          errorMsg = `Request timed out while processing commit ${normalizedHash}. This commit might be very large or complex to analyze.`;
+          suggestionMsg = `Try:
+1. Refreshing the page and trying again
+2. Using a shorter (7-character) commit hash
+3. Analyzing a different commit`;
+        } else if (errorMsg.includes('access') || errorMsg.includes('permission')) {
+          errorMsg = `You don't have permission to access commit ${normalizedHash}.`;
+          suggestionMsg = `If this is a private repository, please ensure your GitHub token has the necessary permissions. You can update your token in the credentials settings.`;
+        } else if (errorMsg.includes('shallow clone') || errorMsg.includes('clone depth')) {
+          errorMsg = `Commit ${normalizedHash} could not be found in the current repository clone.`;
+          suggestionMsg = `This commit may be too old. The system currently only clones the most recent 1000 commits. Try using a more recent commit or contact the administrator to increase the clone depth limit.`;
+        }
+        
+        setMessages((prev: ChatMessage[]) => [...prev, {
+          role: 'assistant',
+          content: `${errorMsg}${suggestionMsg ? '\n\n' + suggestionMsg : ''}`
         }]);
       }
     } catch (error) {

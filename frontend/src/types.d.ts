@@ -15,6 +15,10 @@ export interface RepoInfo {
   description: string;
   branches: string[];
   default_branch: string;
+  full_name: string;
+  stars: number;
+  forks: number;
+  language: string;
 }
 
 export interface FileStructure {
