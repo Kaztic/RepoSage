@@ -638,8 +638,22 @@ export default function useRepositoryState() {
   
   // Look up a commit by hash
   const lookupCommitByHash = async (hash?: string, attempt: number = 1) => {
-    const commitHash = hash || commitHashInput.trim();
-    if (!repoUrl || !commitHash) return;
+    console.log('[lookupCommitByHash] Entered function');
+    // Extract the hash from input and clean it
+    let inputHash = hash || commitHashInput.trim();
+    
+    // Remove any spaces - often happens when users copy-paste multiple hashes or with extra spaces
+    inputHash = inputHash.split(/\s+/)[0].trim();
+    
+    console.log(`[lookupCommitByHash] Original input: "${hash || commitHashInput}", Cleaned hash: "${inputHash}"`);
+    
+    const commitHash = inputHash;
+    console.log(`[lookupCommitByHash] repoUrl: ${repoUrl}, final commitHash: ${commitHash}`);
+    
+    if (!repoUrl || !commitHash) {
+      console.warn('[lookupCommitByHash] Exiting early: repoUrl or commitHash is empty.');
+      return;
+    }
     
     try {
       setLoading(true);

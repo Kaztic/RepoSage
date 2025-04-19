@@ -927,6 +927,11 @@ async def get_commit_by_hash(request: Dict[str, str] = Body(...)):
     commit_hash = request.get("commit_hash")
     access_token = request.get("access_token")
     
+    # Clean the commit hash - handle spaces and multiple hashes
+    if commit_hash:
+        # Take only the first segment if multiple are provided (split by spaces)
+        commit_hash = commit_hash.split()[0].strip()
+    
     logger.info(f"Looking up commit by hash: {commit_hash} for repo: {repo_url}")
     
     if not repo_url or not commit_hash:

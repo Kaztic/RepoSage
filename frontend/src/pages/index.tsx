@@ -134,7 +134,10 @@ export default function Home() {
             onFetchFileContent={repoState.fetchFileContent}
             onTabClick={repoState.handleTabClick}
             onCommitHashChange={repoState.setCommitHashInput}
-            onLookupCommit={() => repoState.lookupCommitByHash()}
+            onLookupCommit={() => {
+              console.log('[Sidebar] Lookup commit triggered with hash:', repoState.commitHashInput);
+              repoState.lookupCommitByHash(repoState.commitHashInput);
+            }}
             onViewCommitDetails={repoState.viewCommitDetails}
             onFetchFullHistory={repoState.fetchFullCommitHistory}
           />
