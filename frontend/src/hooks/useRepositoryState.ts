@@ -189,9 +189,9 @@ export default function useRepositoryState() {
       pollingIntervalRef.current = setInterval(() => {
         setAnalysisProgress(prev => {
           // Simulate progress up to 90% (the last 10% will happen on success)
-          if (prev < 90) {
+          if (prev < 30) {
             // Start slow, then accelerate, then slow down
-            const increment = prev < 30 ? 5 : (prev < 60 ? 3 : 1);
+            const increment = prev < 10 ? 5 : (prev < 20 ? 3 : 1);
             return prev + increment;
           }
           return prev;
@@ -367,13 +367,17 @@ export default function useRepositoryState() {
     }
     
     try {
-      // Call the API with the selected Gemini model
+      // Check if a commit is selected that should be included in context
+      const commitHash = selectedCommit ? selectedCommit.hash : undefined;
+      
+      // Call the API with the selected Gemini model, including commit info if available
       const response = await apiService.sendChatMessageToAI(
         repoUrl, 
         [...messages, userMessage], 
         accessToken || undefined,
         selectedModel,
-        'gemini'
+        'gemini',
+        commitHash
       );
       
       // Extract the assistant's response content
@@ -389,8 +393,33 @@ export default function useRepositoryState() {
       ]);
 
       // *** START: Check for commit hashes in the response ***
-      const potentialHashes = assistantContent.match(/\b[a-f0-9]{7,40}\b/gi);
-      if (potentialHashes && potentialHashes.length > 0) {
+      // Look for patterns that are likely to be commit hashes
+      // This improved regex looks for hash patterns that are:
+      // 1. Mentioned as "commit <hash>"
+      // 2. Properly formatted hashes of correct length
+      // 3. Not part of a diff block (to avoid picking up diff hashes)
+      const hashMatches = assistantContent.match(/\b(?:commit:?\s+|hash:?\s+|commit hash:?\s+|sha:?\s+)?([0-9a-f]{7,40})\b/gi);
+      
+      // Extract just the hashes from the matches
+      const potentialHashes = [];
+      if (hashMatches) {
+        for (const match of hashMatches) {
+          // Extract just the hash part
+          const hashPart = match.replace(/\b(?:commit:?\s+|hash:?\s+|commit hash:?\s+|sha:?\s+)/i, '');
+          if (hashPart.match(/^[0-9a-f]{7,40}$/i)) {
+            potentialHashes.push(hashPart);
+          }
+        }
+      }
+      
+      // Filter to skip hashes within diff blocks
+      // Don't process hashes if they appear to be in diff content
+      const isDiffContent = assistantContent.includes('```diff') || 
+                          assistantContent.includes('+++') || 
+                          assistantContent.includes('---') ||
+                          assistantContent.match(/^[+-]{1}[^+-]/m);
+      
+      if (potentialHashes.length > 0 && !isDiffContent) {
         console.log('Found potential commit hashes in response:', potentialHashes);
         const knownHashes = new Set(commitHistory.map(c => c.hash));
         const knownShortHashes = new Set(commitHistory.map(c => c.short_hash));

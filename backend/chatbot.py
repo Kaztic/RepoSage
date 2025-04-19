@@ -55,19 +55,48 @@ class RepoAnalyzer:
         import concurrent.futures
         
         # First get basic info (quick operation)
-        repo_info = self._get_repo_info()
+        try:
+            repo_info = self._get_repo_info()
+        except Exception as e:
+            logger.error(f"Error getting repository info: {e}", exc_info=True)
+            repo_info = {
+                "name": os.path.basename(self.repo.working_dir),
+                "description": "Error extracting repository description",
+                "branches": [],
+                "default_branch": "main"
+            }
         
         # Then run heavier operations in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            future_commit_history = executor.submit(self._get_commit_history)
-            future_file_structure = executor.submit(self._get_file_structure)
-            
-            # Wait for all tasks to complete
-            commit_history = future_commit_history.result()
-            file_structure = future_file_structure.result()
+        commit_history = []
+        file_structure = {}
+        important_files = []
         
-        # Only run this after we have file structure
-        important_files = self._identify_important_files()
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                future_commit_history = executor.submit(self._get_commit_history)
+                future_file_structure = executor.submit(self._get_file_structure)
+                
+                # Wait for all tasks to complete with exception handling
+                try:
+                    commit_history = future_commit_history.result()
+                except Exception as e:
+                    logger.error(f"Error getting commit history: {e}", exc_info=True)
+                    commit_history = []
+                
+                try:
+                    file_structure = future_file_structure.result()
+                except Exception as e:
+                    logger.error(f"Error getting file structure: {e}", exc_info=True)
+                    file_structure = {}
+                
+            # Only run this after we have file structure
+            try:
+                important_files = self._identify_important_files()
+            except Exception as e:
+                logger.error(f"Error identifying important files: {e}", exc_info=True)
+                important_files = []
+        except Exception as e:
+            logger.error(f"Error during parallel analysis: {e}", exc_info=True)
         
         results = {
             "repo_info": repo_info,
@@ -214,6 +243,22 @@ class RepoAnalyzer:
             max_files: Maximum number of files to process to avoid timeouts
         """
         try:
+            # Clean and normalize the commit hash first
+            original_hash = commit_hash
+            commit_hash = commit_hash.strip()
+            
+            # Remove any non-hexadecimal characters
+            cleaned_hash = re.sub(r'[^0-9a-fA-F]', '', commit_hash)
+            
+            if cleaned_hash != commit_hash:
+                logger.info(f"Cleaned commit hash from '{commit_hash}' to '{cleaned_hash}'")
+                commit_hash = cleaned_hash
+            
+            # If the hash is empty after cleaning, return None
+            if not commit_hash:
+                logger.warning(f"Invalid commit hash after cleaning: '{original_hash}'")
+                return None
+                
             # First try to find in cached history
             for commit in self.commit_history:
                 # Check if the provided hash matches either the full hash or the short hash
@@ -230,6 +275,7 @@ class RepoAnalyzer:
                     commit_hash = full_hash
             except GitCommandError as e:
                 # If rev-parse fails, continue with the original hash
+                logger.warning(f"Failed to resolve hash with rev-parse: {e}")
                 pass
             
             # Now try to get the commit
@@ -749,6 +795,20 @@ class GeminiClient:
         
         user_query = dict_messages[-1]["content"]
         
+        # Check if query contains a likely commit hash
+        commit_hash_match = re.search(r'(?:commit\s+)?([0-9a-f]{7,40})', user_query, re.IGNORECASE)
+        specific_commit = None
+        
+        if commit_hash_match:
+            # Extract the hash from the match
+            possible_hash = commit_hash_match.group(1)
+            logger.info(f"Detected possible commit hash in query: {possible_hash}")
+            
+            # Try to find the commit
+            specific_commit = self.repo_analyzer.get_commit_by_hash(possible_hash)
+            if specific_commit:
+                logger.info(f"Found commit matching hash: {specific_commit['short_hash']}")
+        
         # Detect if the query is looking for specific code elements
         code_search_patterns = [
             r'function\s+(\w+)',
@@ -967,9 +1027,33 @@ class GeminiClient:
             code_search_keywords = ['function', 'class', 'method', 'implementation', 'code', 'definition']
             is_code_query = any(keyword in query.lower() for keyword in code_search_keywords)
             
+            # Check if this is a commit-specific query
+            commit_search_keywords = ['commit', 'change', 'revision', 'version', 'diff', 'hash']
+            is_commit_query = any(keyword in query.lower() for keyword in commit_search_keywords)
+            
+            # Check if context includes specific commit info
+            context_data = json.loads(context_str)
+            has_specific_commit = 'repo_info' in context_data and 'specific_commit' in context_data['repo_info']
+            
+            # Customize the prompt based on the query type
+            system_context = """You are RepoSage, an AI assistant specialized in analyzing and explaining GitHub repositories.
+            You should help the user understand repository structure, code, commits, and functionality."""
+            
+            # Add specific instructions for commit analysis if needed
+            if has_specific_commit or is_commit_query:
+                commit_context = """
+                IMPORTANT: A specific commit has been identified in the repository context. When discussing this commit:
+                1. Explain the purpose of the commit based on its message and changes
+                2. Describe what files were modified and how they were changed
+                3. Explain the impact of these changes on the codebase
+                4. If available, reference the diff to point out specific code changes
+                
+                This commit information is crucial context for answering the user's question accurately.
+                """
+                system_context += commit_context
+            
             prompt = f"""
-            You are RepoSage, an AI assistant specialized in analyzing and explaining GitHub repositories.
-            You should help the user understand repository structure, code, commits, and functionality.
+            {system_context}
             
             Use the following repository context to answer the user's question. Your goal is to provide
             clear, accurate and helpful information about the repository.
@@ -1163,11 +1247,31 @@ If you're uncertain about something, acknowledge your limitations rather than gu
     def _prepare_context(self, query):
         """Prepare repository context based on the user query."""
         try:
+            # Check if query contains a likely commit hash
+            # Look for patterns like "commit abc123" or just "abc123" if it looks like a hash
+            commit_hash_match = re.search(r'(?:commit\s+)?([0-9a-f]{7,40})', query, re.IGNORECASE)
+            specific_commit = None
+            
+            if commit_hash_match:
+                # Extract the hash from the match
+                possible_hash = commit_hash_match.group(1)
+                logger.info(f"Detected possible commit hash in query: {possible_hash}")
+                
+                # Try to find the commit
+                specific_commit = self.repo_analyzer.get_commit_by_hash(possible_hash)
+                if specific_commit:
+                    logger.info(f"Found commit matching hash: {specific_commit['short_hash']}")
+            
             # Find relevant files based on the query
             relevant_files = self.repo_analyzer.search_relevant_files(query, top_k=5)
             
-            # Search commit history for relevant commits
+            # Search commit history for relevant commits 
+            # If we already have a specific commit, make sure it's included
             relevant_commits = self.repo_analyzer.search_commit_history(query)[:3]
+            if specific_commit:
+                # Add the specific commit at the beginning if not already in the list
+                if not any(c['hash'] == specific_commit['hash'] for c in relevant_commits):
+                    relevant_commits.insert(0, specific_commit)
             
             # Get README summary for general context
             readme_summary = self._get_readme_summary()
@@ -1176,8 +1280,41 @@ If you're uncertain about something, acknowledge your limitations rather than gu
             context_parts = [
                 f"Repository Name: {os.path.basename(self.repo_analyzer.repo.working_dir)}",
                 f"README Summary: {readme_summary[:500]}...",
-                "\nRelevant Files:"
             ]
+            
+            # Add specific commit details if available
+            if specific_commit:
+                commit_details = [
+                    "\nSPECIFIC COMMIT REQUESTED:",
+                    f"Hash: {specific_commit['hash']}",
+                    f"Short Hash: {specific_commit['short_hash']}",
+                    f"Author: {specific_commit['author']}",
+                    f"Date: {specific_commit['date']}",
+                    f"Message: {specific_commit['message']}",
+                ]
+                
+                # Add file changes for the specific commit
+                if specific_commit.get('file_changes'):
+                    changes = [f"- {c['path']} ({c['change_type']})" for c in specific_commit['file_changes'][:10]]
+                    commit_details.append("Files changed:")
+                    commit_details.extend(changes)
+                    
+                    # Try to add some actual diff content for context if available
+                    if len(specific_commit['file_changes']) > 0:
+                        try:
+                            # Get diff for the first changed file
+                            sample_file = specific_commit['file_changes'][0]['path']
+                            diff = self.repo_analyzer.get_file_diff(specific_commit['hash'], sample_file)
+                            if diff:
+                                commit_details.append(f"\nSample diff for {sample_file}:")
+                                commit_details.append(f"```diff\n{diff[:1000]}\n```")
+                        except Exception as e:
+                            logger.warning(f"Could not get diff for sample file: {e}")
+                
+                context_parts.append("\n".join(commit_details))
+            
+            # Add relevant files context
+            context_parts.append("\nRelevant Files:")
             
             # Add file contents for context
             for file_path, _ in relevant_files:
@@ -1186,8 +1323,8 @@ If you're uncertain about something, acknowledge your limitations rather than gu
                     content = content[:5000] + "...[truncated]"
                 context_parts.append(f"\nFile: {file_path}\n```\n{content}\n```")
             
-            # Add relevant commits
-            if relevant_commits:
+            # Add relevant commits if we didn't already add a specific commit
+            if relevant_commits and not specific_commit:
                 context_parts.append("\nRelevant Commits:")
                 for commit in relevant_commits:
                     context_parts.append(f"\nCommit: {commit['short_hash']} - {commit['message']}")
@@ -1197,7 +1334,7 @@ If you're uncertain about something, acknowledge your limitations rather than gu
             
             return "\n".join(context_parts)
         except Exception as e:
-            logger.error(f"Error preparing context: {e}")
+            logger.error(f"Error preparing context: {e}", exc_info=True)
             return "Error preparing repository context."
     
     def _get_readme_summary(self):

@@ -120,7 +120,11 @@ export default function ChatInterface({
       return;
     }
     
-    // Check if it's a commit hash lookup request
+    /* 
+    // DISABLED: Automatic commit hash detection in user input
+    // This was causing unwanted lookups when pasting diff content containing hashes
+    // The system now only detects and looks up hashes from the AI's responses
+    // Users can still lookup commits by clicking on them in the commit history
     if (e.key === 'Enter' && currentInput.trim().match(/^[0-9a-f]{7,40}$/i) && repoInfoExists) {
       e.preventDefault();
       
@@ -144,6 +148,7 @@ export default function ChatInterface({
       
       return;
     }
+    */
     
     // Enter or Ctrl+Enter sends the message
     if (e.key === 'Enter' && (!e.shiftKey || e.ctrlKey)) {

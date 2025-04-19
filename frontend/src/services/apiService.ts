@@ -250,7 +250,8 @@ export const sendChatMessageToAI = async (
   messages: ChatMessage[],
   accessToken?: string,
   modelName: string = "models/gemini-2.0-flash",
-  modelProvider: string = "gemini"
+  modelProvider: string = "gemini",
+  selectedCommit?: string
 ) => {
   // Use the debug endpoint for Gemini to diagnose issues
   const endpoint = modelProvider === 'claude' 
@@ -269,7 +270,9 @@ export const sendChatMessageToAI = async (
       model_provider: modelProvider,
       api_key: credentials.geminiApiKey,
       // Include API keys for both models
-      gemini_api_key: credentials.geminiApiKey
+      gemini_api_key: credentials.geminiApiKey,
+      // Include selected commit information if available
+      selected_commit: selectedCommit
     };
     
     // Log the payload for debugging (hiding sensitive info)
