@@ -2,7 +2,7 @@
 
 RepoSage is an AI assistant designed to help you understand and interact with GitHub repositories. It analyzes code structure, commit history, and file content, allowing you to ask questions and get insights about the project using AI models like Google Gemini.
 
-[![RepoSage Demo Video](https://img.youtube.com/vi/0OGB_cRR3gA/0.jpg)](https://www.youtube.com/watch?v=0OGB_cRR3gA)
+https://github.com/user-attachments/assets/63ccd75f-cedd-4d5f-b14a-554f5a4bd0ab
 
 ## Overview
 
